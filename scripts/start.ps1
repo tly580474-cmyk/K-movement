@@ -84,16 +84,29 @@ if ($CheckOnly) {
 
 $backendUrl = 'http://127.0.0.1:8000/api/health'
 $frontendUrl = 'http://127.0.0.1:5173/'
+$backendPidFile = Join-Path $runtimeDir 'backend.pid'
+
+if (Test-Path $backendPidFile) {
+    $trackedBackendId = [int](Get-Content -LiteralPath $backendPidFile | Select-Object -First 1)
+    $trackedBackend = Get-CimInstance Win32_Process -Filter "ProcessId = $trackedBackendId" -ErrorAction SilentlyContinue
+    if ($trackedBackend -and $trackedBackend.CommandLine -like '*uvicorn*backend.app.main:app*') {
+        Stop-Process -Id $trackedBackendId
+        for ($attempt = 1; $attempt -le 20 -and (Test-HttpEndpoint $backendUrl); $attempt++) {
+            Start-Sleep -Milliseconds 250
+        }
+        Write-Host '[RESTART] Reloading backend from current source' -ForegroundColor DarkYellow
+    }
+    Remove-Item -LiteralPath $backendPidFile -Force -ErrorAction SilentlyContinue
+}
 
 if (Test-HttpEndpoint $backendUrl) {
-    Write-Host '[SKIP] Backend is already running' -ForegroundColor DarkYellow
+    Write-Host '[SKIP] Port 8000 is already served by an untracked backend' -ForegroundColor DarkYellow
 }
 else {
     $backendProcess = Start-Process -FilePath $pythonExecutable -ArgumentList @(
-        '-m', 'uvicorn', 'backend.app.main:app', '--host', '127.0.0.1', '--port', '8000',
-        '--reload', '--reload-dir', 'backend'
+        '-m', 'uvicorn', 'backend.app.main:app', '--host', '127.0.0.1', '--port', '8000'
     ) -WorkingDirectory $projectRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logDir 'backend.out.log') -RedirectStandardError (Join-Path $logDir 'backend.err.log') -PassThru
-    Set-Content -LiteralPath (Join-Path $runtimeDir 'backend.pid') -Value $backendProcess.Id
+    Set-Content -LiteralPath $backendPidFile -Value $backendProcess.Id
 }
 
 if (Test-HttpEndpoint $frontendUrl) {

@@ -47,7 +47,7 @@ RHYTHM_PATTERNS: dict[str, tuple[tuple[float, float], ...]] = {
     "sparse": ((0.0, 1.25), (2.5, 1.0)),
     "calm": ((0.0, 1.0), (1.5, 0.5), (2.5, 1.0)),
     "steady": ((0.0, 0.75), (1.0, 0.5), (2.0, 0.75), (3.0, 0.75)),
-    "syncopated": ((0.0, 0.5), (0.75, 0.75), (2.0, 0.5), (2.75, 0.5), (3.5, 0.5)),
+    "syncopated": ((0.0, 0.5), (0.5, 0.5), (2.0, 0.5), (2.5, 0.5), (3.5, 0.5)),
     "active": ((0.0, 0.5), (0.75, 0.5), (1.5, 0.5), (2.0, 0.5), (2.75, 0.5), (3.5, 0.5)),
     "cadence": ((0.0, 0.75), (1.0, 0.5), (2.0, 2.0)),
 }
@@ -62,7 +62,8 @@ class BarPlan:
     degree: int
     activity: float
     rhythm: tuple[tuple[float, float], ...]
-    cadence: bool
+    cadence: str | None
+    quiet: bool
 
 
 def _quantile(values: list[float], fraction: float) -> float:
@@ -148,6 +149,66 @@ def _chord_midis(settings: GenerationSettings, degree: int) -> tuple[int, ...]:
     return root, third, fifth
 
 
+def _voice_led_chord(chord: tuple[int, ...], previous: tuple[int, ...] | None) -> tuple[int, ...]:
+    if previous is None or len(previous) != len(chord):
+        return chord
+    candidates: list[tuple[int, tuple[int, ...]]] = []
+    for inversion in range(len(chord)):
+        base = chord[inversion:] + tuple(note + 12 for note in chord[:inversion])
+        for shift in (-24, -12, 0, 12, 24):
+            voicing = tuple(note + shift for note in base)
+            if voicing[0] < 40 or voicing[-1] > 81:
+                continue
+            motion = sum(abs(left - right) for left, right in zip(previous, voicing))
+            common_tones = len(set(previous) & set(voicing))
+            outer_leap = abs(previous[0] - voicing[0]) + abs(previous[-1] - voicing[-1])
+            score = motion + outer_leap - common_tones * 10
+            candidates.append((score, voicing))
+    return min(candidates, key=lambda item: item[0])[1] if candidates else chord
+
+
+def _swing_beat(beat: float, style: str) -> float:
+    ratio = 0.64 if style == "jazz-lounge" else 0.60 if style == "lofi" else 0.5
+    whole = int(beat // 1)
+    fraction = beat - whole
+    if abs(fraction - 0.5) < 1e-6:
+        return whole + ratio
+    return beat
+
+
+def _harmony_pattern(style: str, section_start: bool) -> tuple[tuple[float, float, float], ...]:
+    if style == "ambient-minimal":
+        return ((0.0, 4.0, 0.82),)
+    if style == "jazz-lounge":
+        return ((0.0, 0.6, 0.92), (1.5, 0.55, 0.78), (3.5, 0.4, 0.72)) if section_start else ((0.5, 0.55, 0.82), (2.5, 0.55, 0.76))
+    if style == "lofi":
+        return ((0.0, 1.35, 0.82), (2.5, 0.9, 0.72))
+    if style == "pop-rock":
+        return ((0.0, 0.78, 1.0), (2.0, 0.78, 0.9))
+    if style == "cinematic-epic":
+        return ((0.0, 2.0, 0.78), (2.0, 2.0, 0.92))
+    return ((0.0, 1.7, 0.88), (2.0, 1.7, 0.78))
+
+
+def _bass_pattern(style: str, root: int, chord: tuple[int, ...], next_root: int) -> tuple[tuple[float, float, int], ...]:
+    low_root = max(36, root - 12)
+    low_fifth = min(55, low_root + 7)
+    if style == "jazz-lounge":
+        third = max(36, min(55, chord[1] - 12))
+        approach = max(36, min(55, next_root - 13 if next_root > root else next_root - 11))
+        return ((0.0, 0.82, low_root), (1.0, 0.82, third), (2.0, 0.82, low_fifth), (3.0, 0.82, approach))
+    if style == "ambient-minimal":
+        return ((0.0, 3.8, low_root),)
+    if style == "pop-rock":
+        return ((0.0, 0.78, low_root), (1.0, 0.78, low_fifth), (2.0, 0.78, min(60, low_root + 12)), (3.0, 0.78, low_fifth))
+    if style == "cinematic-epic":
+        direction = 2 if next_root > root else -2 if next_root < root else 0
+        return ((0.0, 1.8, low_root), (2.0, 1.8, max(36, min(55, low_root + direction))))
+    if style == "lofi":
+        return ((0.0, 1.7, low_root), (2.5, 1.1, low_fifth))
+    return ((0.0, 1.75, low_root), (2.0, 1.75, low_fifth))
+
+
 def _section_progression(trend: str, role: str) -> tuple[int, ...]:
     if trend == "bearish":
         progressions = {
@@ -173,7 +234,7 @@ def _section_progression(trend: str, role: str) -> tuple[int, ...]:
     return progressions[role]
 
 
-def _rhythm_for_bar(style: str, mood: str, activity: float, cadence: bool) -> tuple[tuple[float, float], ...]:
+def _rhythm_for_bar(style: str, mood: str, activity: float, cadence: str | None) -> tuple[tuple[float, float], ...]:
     if cadence:
         return RHYTHM_PATTERNS["cadence"]
     if style == "ambient-minimal":
@@ -301,128 +362,190 @@ def generate_composition(request: CompositionCreateRequest, series: CandleSeries
     total_bars = _bar_count(len(selected_indices))
     section_bars = total_bars // 4
     theme = _theme_contour(returns, return_limit)
+    bar_source_groups = [_partition_sources(len(selected_indices), total_bars, bar_index) for bar_index in range(total_bars)]
+    bar_activities = [sum(source_activity[position] for position in positions) / len(positions) for positions in bar_source_groups]
+    selected_closes = [series.items[index].close for index in selected_indices]
+    global_extrema = {selected_closes.index(min(selected_closes)), selected_closes.index(max(selected_closes))}
+    quiet_candidates = [
+        bar_index for bar_index, positions in enumerate(bar_source_groups)
+        if 0 < bar_index % section_bars < section_bars - 2
+        and not any(position in global_extrema for position in positions)
+    ]
+    quiet_target = max(1, round(total_bars * 0.15))
+    quiet_bar_indices = set(sorted(quiet_candidates, key=lambda index: (bar_activities[index], index))[:quiet_target])
 
     bars: list[BarPlan] = []
     for bar_index in range(total_bars):
         section = min(3, bar_index // section_bars)
         role = SECTION_ROLES[section]
         within_section = bar_index - section * section_bars
-        positions = _partition_sources(len(selected_indices), total_bars, bar_index)
-        activity = sum(source_activity[position] for position in positions) / len(positions)
+        positions = bar_source_groups[bar_index]
+        activity = bar_activities[bar_index]
         progression = _section_progression(trend, role)
         degree = progression[within_section % len(progression)]
+        cadence = None
         if within_section == section_bars - 2:
-            degree = 4
+            degree = 1 if role in {"A", "A′"} else 4
         elif within_section == section_bars - 1:
-            degree = 0
-        cadence = within_section == section_bars - 1
+            degree = 4 if role in {"A", "A′"} else 5 if role == "B" else 0
+            cadence = "half" if role in {"A", "A′"} else "deceptive" if role == "B" else "authentic"
+        quiet = bar_index in quiet_bar_indices
         rhythm = _rhythm_for_bar(settings.style, settings.mood, activity, cadence)
-        bars.append(BarPlan(bar_index, section, role, positions, degree, activity, rhythm, cadence))
+        bars.append(BarPlan(bar_index, section, role, positions, degree, activity, rhythm, cadence, quiet))
+
+    raw_chords = [_chord_midis(settings, bar.degree) for bar in bars]
+    voiced_chords: list[tuple[int, ...]] = []
+    previous_voicing: tuple[int, ...] | None = None
+    for chord in raw_chords:
+        previous_voicing = _voice_led_chord(chord, previous_voicing)
+        voiced_chords.append(previous_voicing)
 
     melody_notes: list[MusicNote] = []
     previous_pitch_index = center
-    section_dynamics = {"A": -4, "A′": 1, "B": 7, "A″": 3}
-    style_velocity = {"jazz-lounge": -4, "cinematic-epic": 10, "chinese-folk": 2, "ambient-minimal": -10, "pop-rock": 9}
-    for bar in bars:
-        chord = _chord_midis(settings, bar.degree)
-        is_quiet_bar = (
-            all(source_activity[position] <= quiet_cutoff for position in bar.source_positions)
-            and not any(position in key_positions for position in bar.source_positions)
-            and not bar.cadence
-            and bar.index % section_bars != 0
-        )
-        if is_quiet_bar:
+    previous_velocity = 72
+    a_theme_pitches: list[int] = []
+    section_event_counts = [0, 0, 0, 0]
+    section_dynamics = {"A": -4, "A′": 0, "B": 5, "A″": 2}
+    style_velocity = {"jazz-lounge": -5, "cinematic-epic": 8, "chinese-folk": 1, "ambient-minimal": -9, "pop-rock": 7}
+    for bar, chord in zip(bars, raw_chords):
+        if bar.quiet:
             continue
-        for slot, (beat, notated_duration) in enumerate(bar.rhythm):
-            source_position = bar.source_positions[min(len(bar.source_positions) - 1, slot * len(bar.source_positions) // len(bar.rhythm))]
-            if source_activity[source_position] <= quiet_cutoff and source_position not in key_positions and not bar.cadence:
+        rhythm = list(bar.rhythm)
+        if bar.index % section_bars == 0 and bar.role in {"A′", "A″"}:
+            rhythm.insert(0, (-0.5, 0.32))
+        for slot, (beat, notated_duration) in enumerate(rhythm):
+            pickup = beat < 0
+            source_position = bar.source_positions[min(len(bar.source_positions) - 1, slot * len(bar.source_positions) // len(rhythm))]
+            if not pickup and source_activity[source_position] <= quiet_cutoff and source_position not in key_positions and not bar.cadence:
                 continue
             candle_index = selected_indices[source_position]
             normalized_return = max(-1.0, min(1.0, returns[source_position] / return_limit))
             data_offset = round(normalized_return * settings.mapping_strength * 7)
-            theme_index = round((bar.index % section_bars + beat / BEATS_PER_BAR) / section_bars * (len(theme) - 1))
+            event_index = section_event_counts[bar.section]
+            theme_index = round((bar.index % section_bars + max(0, beat) / BEATS_PER_BAR) / section_bars * (len(theme) - 1))
             theme_offset = theme[min(len(theme) - 1, theme_index)]
-            if bar.role == "A":
-                shaped_offset = round(theme_offset * 0.55 + data_offset * 0.45)
-            elif bar.role == "A′":
-                shaped_offset = round(theme_offset * 0.7 + data_offset * 0.3) + (1 if slot % 2 else 0)
-            elif bar.role == "B":
-                shaped_offset = -theme_offset + round(data_offset * 0.35) + 4
+            theme_locked = False
+            if pickup:
+                pickup_target = a_theme_pitches[0] if a_theme_pitches else previous_pitch_index + (1 if trend != "bearish" else -1)
+                target_index = max(0, min(len(scale_notes) - 1, round((previous_pitch_index + pickup_target) / 2)))
+            elif bar.role == "A′" and event_index < min(8, len(a_theme_pitches)):
+                target_index = max(0, min(len(scale_notes) - 1, a_theme_pitches[event_index] + (1 if event_index in {3, 7} else 0)))
+                theme_locked = True
+            elif bar.role == "A″" and event_index < min(8, len(a_theme_pitches)):
+                target_index = a_theme_pitches[event_index]
+                theme_locked = True
             else:
-                shaped_offset = round(theme_offset * 0.8 + data_offset * 0.2) + (1 if trend == "bullish" else -1 if trend == "bearish" else 0)
-            if settings.mood == "dark":
-                shaped_offset -= 2
-            target_index = max(0, min(len(scale_notes) - 1, center + shaped_offset))
-            if beat in {0.0, 2.0}:
+                if bar.role == "A":
+                    shaped_offset = round(theme_offset * 0.55 + data_offset * 0.45)
+                    role_center = center
+                elif bar.role == "A′":
+                    shaped_offset = round(theme_offset * 0.65 + data_offset * 0.35)
+                    role_center = center + 1
+                elif bar.role == "B":
+                    shaped_offset = -theme_offset + round(data_offset * 0.35)
+                    role_center = center + 3
+                else:
+                    shaped_offset = round(theme_offset * 0.75 + data_offset * 0.25)
+                    role_center = center
+                if settings.mood == "dark":
+                    shaped_offset -= 2
+                target_index = max(0, min(len(scale_notes) - 1, role_center + shaped_offset))
+            if not pickup and not theme_locked and beat in {0.0, 2.0}:
                 target_index = _nearest_chord_index(scale_notes, target_index, chord)
             max_step = {"ambient-minimal": 1, "cinematic-epic": 4, "pop-rock": 3}.get(settings.style, 3 if settings.mood == "tense" else 2)
-            if bar.role == "B" and bar.index == bar.section * section_bars and slot == 0:
-                max_step = 5
-            pitch_index = max(0, min(len(scale_notes) - 1, max(previous_pitch_index - max_step, min(previous_pitch_index + max_step, target_index))))
+            if theme_locked:
+                pitch_index = target_index
+            else:
+                if bar.role == "B" and bar.index == bar.section * section_bars and slot == 0:
+                    max_step = 6
+                pitch_index = max(0, min(len(scale_notes) - 1, max(previous_pitch_index - max_step, min(previous_pitch_index + max_step, target_index))))
             if bar.cadence and beat == 2.0:
-                tonic_class = ROOT_PITCH_CLASS[settings.musical_key]
-                tonic_indices = [index for index, midi in enumerate(scale_notes) if midi % 12 == tonic_class]
-                pitch_index = min(tonic_indices, key=lambda index: abs(index - center))
+                resolution_class = chord[0] % 12
+                resolution_indices = [index for index, midi in enumerate(scale_notes) if midi % 12 == resolution_class]
+                if resolution_indices:
+                    pitch_index = min(resolution_indices, key=lambda index: abs(index - previous_pitch_index))
             previous_pitch_index = pitch_index
-            volume_ratio = volume_ratios[source_position]
-            beat_weight = 12 if beat == 0 else 7 if beat == 2 else -4
-            phrase_arc = round(5 * (bar.index % section_bars) / max(1, section_bars - 1))
-            velocity = round(48 + min(2.0, volume_ratio) / 2 * 45 + beat_weight + phrase_arc + section_dynamics[bar.role] + style_velocity.get(settings.style, 0))
-            if source_position in key_positions:
-                velocity += 10
+            if bar.role == "A" and not pickup and len(a_theme_pitches) < 8:
+                a_theme_pitches.append(pitch_index)
+            volume_adjust = max(-6, min(6, round((volume_ratios[source_position] - 1) * 7)))
+            beat_weight = -6 if pickup else 7 if beat == 0 else 4 if beat == 2 else -2
+            phrase_arc = round(6 * (bar.index % section_bars) / max(1, section_bars - 1))
+            phrase_level = 70 + section_dynamics[bar.role] + phrase_arc + style_velocity.get(settings.style, 0)
+            raw_velocity = phrase_level + beat_weight + volume_adjust + (7 if source_position in key_positions else 0)
+            velocity = round(previous_velocity * 0.55 + raw_velocity * 0.45)
+            max_velocity_step = 12 if source_position in key_positions else 9
+            velocity = max(previous_velocity - max_velocity_step, min(previous_velocity + max_velocity_step, velocity))
             velocity = max(32, min(122, velocity))
+            previous_velocity = velocity
             legato = STYLE_LEGATO_FACTORS.get(settings.style, 1.08 if settings.mood == "calm" else 0.96)
             duration_beats = min(BEATS_PER_BAR - beat, notated_duration * legato)
             if bar.cadence and beat == 2.0:
-                duration_beats = 2.0
+                duration_beats = {"half": 1.25, "deceptive": 1.5, "authentic": 2.0}[bar.cadence]
             if source_position in key_positions and not bar.cadence:
                 duration_beats = min(BEATS_PER_BAR - beat, max(duration_beats, 1.25))
+            swung_beat = _swing_beat(beat, settings.style)
             melody_notes.append(MusicNote(
                 id=f"note-{len(melody_notes) + 1}", track_id="melody", midi=scale_notes[pitch_index], pitch_name=_pitch_name(scale_notes[pitch_index]),
-                start_seconds=round((bar.index * BEATS_PER_BAR + beat) * seconds_per_beat, 6),
+                start_seconds=round((bar.index * BEATS_PER_BAR + swung_beat) * seconds_per_beat, 6),
                 duration_seconds=round(max(0.125, duration_beats) * seconds_per_beat, 6), velocity=velocity,
                 candle_index=candle_index, motif_id=f"motif-{bar.section + 1}",
             ))
+            if not pickup:
+                section_event_counts[bar.section] += 1
 
     harmony_notes: list[MusicNote] = []
     bass_notes: list[MusicNote] = []
-    for bar in bars:
-        chord = _chord_midis(settings, bar.degree)
-        start_seconds = bar.index * BEATS_PER_BAR * seconds_per_beat
-        duration_seconds = BEATS_PER_BAR * seconds_per_beat
+    for bar, chord, voicing in zip(bars, raw_chords, voiced_chords):
+        if bar.quiet:
+            continue
         candle_index = selected_indices[bar.source_positions[0]]
-        harmony_velocity = max(36, min(82, round(48 + bar.activity * 22 + section_dynamics[bar.role])))
-        for voice, midi in enumerate(chord):
-            harmony_notes.append(MusicNote(
-                id=f"harmony-{bar.index + 1}-{voice + 1}", track_id="harmony", midi=midi, pitch_name=_pitch_name(midi),
-                start_seconds=round(start_seconds, 6), duration_seconds=round(duration_seconds, 6), velocity=harmony_velocity,
-                candle_index=candle_index, motif_id=f"motif-{bar.section + 1}",
-            ))
-        bass_root = max(36, chord[0] - 12)
-        for pulse, midi in enumerate((bass_root, min(55, bass_root + 7))):
+        harmony_base = max(36, min(80, round(48 + bar.activity * 14 + section_dynamics[bar.role])))
+        section_start = bar.index % section_bars == 0
+        for event_index, (beat, duration, velocity_factor) in enumerate(_harmony_pattern(settings.style, section_start)):
+            swung_beat = _swing_beat(beat, settings.style)
+            for voice, midi in enumerate(voicing):
+                harmony_notes.append(MusicNote(
+                    id=f"harmony-{bar.index + 1}-{event_index + 1}-{voice + 1}", track_id="harmony", midi=midi, pitch_name=_pitch_name(midi),
+                    start_seconds=round((bar.index * 4 + swung_beat) * seconds_per_beat, 6),
+                    duration_seconds=round(min(4 - beat, duration) * seconds_per_beat, 6), velocity=max(32, round(harmony_base * velocity_factor)),
+                    candle_index=candle_index, motif_id=f"motif-{bar.section + 1}",
+                ))
+        next_chord = raw_chords[min(len(raw_chords) - 1, bar.index + 1)]
+        for pulse, (beat, duration, midi) in enumerate(_bass_pattern(settings.style, chord[0], chord, next_chord[0])):
+            swung_beat = _swing_beat(beat, settings.style)
             bass_notes.append(MusicNote(
                 id=f"bass-{bar.index + 1}-{pulse + 1}", track_id="bass", midi=midi, pitch_name=_pitch_name(midi),
-                start_seconds=round((bar.index * BEATS_PER_BAR + pulse * 2) * seconds_per_beat, 6),
-                duration_seconds=round(1.8 * seconds_per_beat, 6), velocity=max(40, harmony_velocity - 5),
-                candle_index=candle_index, motif_id=f"motif-{bar.section + 1}",
+                start_seconds=round((bar.index * 4 + swung_beat) * seconds_per_beat, 6), duration_seconds=round(duration * seconds_per_beat, 6),
+                velocity=max(36, harmony_base - 5), candle_index=candle_index, motif_id=f"motif-{bar.section + 1}",
             ))
 
     drum_notes: list[MusicNote] = []
     if settings.style == "pop-rock":
         for bar in bars:
+            if bar.quiet:
+                continue
             candle_index = selected_indices[bar.source_positions[0]]
+            section_start = bar.index % section_bars == 0
+            section_end = (bar.index + 1) % section_bars == 0
+            drum_events: list[tuple[float, int, int, float]] = []
+            if section_start:
+                drum_events.append((0.0, 49, 112, 0.6))
             for half_beat in range(8):
                 beat = half_beat / 2
-                events = [(42, 62 + (8 if half_beat in {0, 4} else 0))]
+                if section_end and half_beat >= 5:
+                    drum_events.append((beat, (45, 47, 45)[half_beat - 5], 88 + (half_beat - 5) * 8, 0.24))
+                    continue
+                drum_events.append((beat, 42, 62 + (8 if half_beat in {0, 4} else 0), 0.16))
                 if half_beat % 2 == 0:
-                    events.append((36 if half_beat in {0, 4} else 38, 108 if half_beat in {0, 4} else 98))
-                for event_index, (midi, velocity) in enumerate(events):
-                    drum_notes.append(MusicNote(
-                        id=f"drum-{bar.index + 1}-{half_beat + 1}-{event_index + 1}", track_id="drums", midi=midi,
-                        pitch_name=_pitch_name(midi), start_seconds=round((bar.index * 4 + beat) * seconds_per_beat, 6),
-                        duration_seconds=round(seconds_per_beat * 0.16, 6), velocity=velocity,
-                        candle_index=candle_index, motif_id=f"motif-{bar.section + 1}",
-                    ))
+                    drum_events.append((beat, 36 if half_beat in {0, 4} else 38, 108 if half_beat in {0, 4} else 98, 0.16))
+                if bar.activity >= 0.72 and half_beat == 7 and not section_end:
+                    drum_events.append((beat, 36, 82, 0.16))
+            for event_index, (beat, midi, velocity, duration) in enumerate(drum_events):
+                drum_notes.append(MusicNote(
+                    id=f"drum-{bar.index + 1}-{event_index + 1}", track_id="drums", midi=midi, pitch_name=_pitch_name(midi),
+                    start_seconds=round((bar.index * 4 + beat) * seconds_per_beat, 6), duration_seconds=round(seconds_per_beat * duration, 6),
+                    velocity=velocity, candle_index=candle_index, motif_id=f"motif-{bar.section + 1}",
+                ))
 
     motifs: list[MarketMotif] = []
     for section, role in enumerate(SECTION_ROLES):

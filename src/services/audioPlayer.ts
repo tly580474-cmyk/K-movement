@@ -11,6 +11,8 @@ export class CompositionAudioPlayer {
   private kick: import('tone').MembraneSynth | null = null
   private snare: import('tone').NoiseSynth | null = null
   private hiHat: import('tone').NoiseSynth | null = null
+  private crash: import('tone').MetalSynth | null = null
+  private tom: import('tone').MembraneSynth | null = null
   private space: import('tone').Reverb | null = null
   private master: import('tone').Gain | null = null
   private compositionId = ''
@@ -74,6 +76,9 @@ export class CompositionAudioPlayer {
       this.kick = new Tone.MembraneSynth({ volume: -7, pitchDecay: 0.04, octaves: 5 }).connect(this.master)
       this.snare = new Tone.NoiseSynth({ volume: -13, noise: { type: 'pink' }, envelope: { attack: 0.001, decay: 0.16, sustain: 0, release: 0.08 } }).connect(this.master)
       this.hiHat = new Tone.NoiseSynth({ volume: -20, noise: { type: 'white' }, envelope: { attack: 0.001, decay: 0.035, sustain: 0, release: 0.025 } }).connect(this.master)
+      this.crash = new Tone.MetalSynth({ volume: -17, harmonicity: 5.1, modulationIndex: 24, resonance: 3200, octaves: 1.5, envelope: { attack: 0.001, decay: 0.7, release: 0.35 } }).connect(this.master)
+      this.crash.frequency.value = 220
+      this.tom = new Tone.MembraneSynth({ volume: -11, pitchDecay: 0.07, octaves: 3.5 }).connect(this.master)
     }
 
     this.compositionId = composition.id
@@ -144,6 +149,9 @@ export class CompositionAudioPlayer {
         if (track === 'drums' && note.midi === 36) this.kick?.triggerAttackRelease('C1', note.durationSeconds, time, velocity)
         if (track === 'drums' && note.midi === 38) this.snare?.triggerAttackRelease(note.durationSeconds, time, velocity)
         if (track === 'drums' && note.midi === 42) this.hiHat?.triggerAttackRelease(note.durationSeconds, time, velocity)
+        if (track === 'drums' && note.midi === 49) this.crash?.triggerAttackRelease(note.durationSeconds, time, velocity)
+        if (track === 'drums' && note.midi === 45) this.tom?.triggerAttackRelease('G1', note.durationSeconds, time, velocity)
+        if (track === 'drums' && note.midi === 47) this.tom?.triggerAttackRelease('C2', note.durationSeconds, time, velocity)
       }, note.startSeconds)
     }
   }
@@ -189,6 +197,8 @@ export class CompositionAudioPlayer {
     this.kick?.dispose()
     this.snare?.dispose()
     this.hiHat?.dispose()
+    this.crash?.dispose()
+    this.tom?.dispose()
     this.space?.dispose()
     this.master?.dispose()
     this.melody = null
@@ -197,6 +207,8 @@ export class CompositionAudioPlayer {
     this.kick = null
     this.snare = null
     this.hiHat = null
+    this.crash = null
+    this.tom = null
     this.space = null
     this.master = null
   }
