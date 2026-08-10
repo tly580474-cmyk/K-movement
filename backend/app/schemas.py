@@ -81,7 +81,17 @@ class CandleSeriesResponse(ApiModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-MusicStyle = Literal["orchestral", "piano", "synth", "lofi"]
+MusicStyle = Literal[
+    "orchestral",
+    "piano",
+    "synth",
+    "lofi",
+    "jazz-lounge",
+    "cinematic-epic",
+    "chinese-folk",
+    "ambient-minimal",
+    "pop-rock",
+]
 MusicScale = Literal["major-pentatonic", "minor-pentatonic", "major", "minor"]
 MusicMood = Literal["upward", "calm", "tense", "dark"]
 

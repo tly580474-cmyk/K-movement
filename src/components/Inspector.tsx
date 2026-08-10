@@ -2,6 +2,18 @@ import { ChevronRight, RefreshCw, TrendingUp } from 'lucide-react'
 import type { AssetSummary, CandleDto, CompositionDto, GenerationSettings, MarketAnalysis } from '../types/api'
 import { Panel } from './Panel'
 
+const styleInstrumentPresets: Record<GenerationSettings['style'], string[]> = {
+  orchestral: ['piano', 'strings', 'bass'],
+  piano: ['piano'],
+  synth: ['synth', 'pad', 'bass'],
+  lofi: ['electric-piano', 'pad', 'bass'],
+  'jazz-lounge': ['electric-piano', 'brass', 'upright-bass'],
+  'cinematic-epic': ['piano', 'strings', 'bass'],
+  'chinese-folk': ['guzheng', 'erhu', 'bass'],
+  'ambient-minimal': ['piano', 'pad', 'bass'],
+  'pop-rock': ['electric-guitar', 'power-chord', 'bass'],
+}
+
 interface InspectorProps {
   asset: AssetSummary
   analysis: MarketAnalysis | null
@@ -51,11 +63,19 @@ export function Inspector({ asset, analysis, latestCandle, warnings, settings, o
 
       <Panel title="音乐生成参数" action={<ChevronRight size={16} />} className="generation-panel">
         <label>生成风格
-          <select value={settings.style} onChange={(event) => onSettingsChange({ style: event.target.value as GenerationSettings['style'] })}>
+          <select value={settings.style} onChange={(event) => {
+            const style = event.target.value as GenerationSettings['style']
+            onSettingsChange({ style, instruments: styleInstrumentPresets[style] })
+          }}>
             <option value="orchestral">交响乐 (Orchestral)</option>
             <option value="piano">氛围钢琴 (Piano)</option>
             <option value="synth">电子合成 (Synth)</option>
             <option value="lofi">低保真 (Lo-fi)</option>
+            <option value="jazz-lounge">轻爵士 (Jazz Lounge)</option>
+            <option value="cinematic-epic">史诗影视风 (Cinematic Epic)</option>
+            <option value="chinese-folk">国风新民乐 (Chinese Folk)</option>
+            <option value="ambient-minimal">极简氛围 (Ambient Minimal)</option>
+            <option value="pop-rock">摇滚律动 (Pop Rock)</option>
           </select>
         </label>
         <label>乐器编制
@@ -63,6 +83,11 @@ export function Inspector({ asset, analysis, latestCandle, warnings, settings, o
             <option value="piano,strings,bass">Piano + Strings + Bass</option>
             <option value="piano">Piano Solo</option>
             <option value="synth,bass,drums">Synth + Bass + Drums</option>
+            <option value="synth,pad,bass">Synth + Pad + Bass</option>
+            <option value="electric-piano,pad,bass">Electric Piano + Pad + Bass</option>
+            <option value="electric-piano,brass,upright-bass">Electric Piano + Brass + Upright Bass</option>
+            <option value="guzheng,erhu,bass">Guzheng + Erhu + Bass</option>
+            <option value="electric-guitar,power-chord,bass">Electric Guitar + Power Chord + Bass</option>
           </select>
         </label>
         <label>BPM
@@ -79,7 +104,7 @@ export function Inspector({ asset, analysis, latestCandle, warnings, settings, o
         <label>情感色彩
           <select value={settings.mood} onChange={(event) => onSettingsChange({ mood: event.target.value as GenerationSettings['mood'] })}><option value="upward">激昂 / 向上</option><option value="calm">平静 / 舒缓</option><option value="tense">紧张 / 波动</option><option value="dark">低沉 / 回落</option></select>
         </label>
-        {generationError ? <div className="generation-error" role="alert">{generationError}</div> : null}
+        {generationError ? <div className="generation-error" role="alert" title={generationError}>{generationError}</div> : null}
         <button className="generate-button" onClick={onGenerate} disabled={generating || !canGenerate} aria-busy={generating}>
           <RefreshCw size={16} className={generating ? 'spinning' : ''} />
           {generating ? '生成乐章中…' : canGenerate ? '生成市场乐章' : '等待真实行情'}

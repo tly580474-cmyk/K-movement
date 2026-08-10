@@ -114,7 +114,7 @@ function App() {
         setProgress(100)
       })
       player.current.setVolume(volume)
-      if (!audioResult.sampledPiano) setPlaybackError('钢琴采样加载失败，已切换为本地柔和音色')
+      if (audioResult.sampleFallback) setPlaybackError('钢琴采样加载失败，已切换为本地柔和音色')
       setComposition(generated)
       setCurrentSeconds(0)
       setProgress(0)

@@ -80,7 +80,16 @@ export interface ApiError {
   requestId?: string
 }
 
-export type MusicStyle = 'orchestral' | 'piano' | 'synth' | 'lofi'
+export type MusicStyle =
+  | 'orchestral'
+  | 'piano'
+  | 'synth'
+  | 'lofi'
+  | 'jazz-lounge'
+  | 'cinematic-epic'
+  | 'chinese-folk'
+  | 'ambient-minimal'
+  | 'pop-rock'
 export type MusicScale = 'major-pentatonic' | 'minor-pentatonic' | 'major' | 'minor'
 export type MusicMood = 'upward' | 'calm' | 'tense' | 'dark'
 

@@ -4,7 +4,20 @@ from .schemas import Composition, MusicTrack
 
 
 TICKS_PER_BEAT = 480
-PROGRAMS = {"piano": 0, "strings": 48, "bass": 32, "synth": 80}
+PROGRAMS = {
+    "electric-piano": 4,
+    "piano": 0,
+    "strings": 48,
+    "brass": 61,
+    "upright-bass": 32,
+    "bass": 33,
+    "electric-guitar": 29,
+    "power-chord": 30,
+    "guzheng": 107,
+    "erhu": 110,
+    "pad": 89,
+    "synth": 80,
+}
 
 
 def _variable_length(value: int) -> bytes:
@@ -61,10 +74,17 @@ def _music_track(track: MusicTrack, channel: int, bpm: int) -> bytes:
 
 def composition_to_midi(composition: Composition) -> bytes:
     channels = (0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15)
-    music_chunks = [
-        _music_track(track, channels[index], composition.settings.bpm)
-        for index, track in enumerate(composition.tracks[: len(channels)])
-    ]
+    channel_index = 0
+    music_chunks: list[bytes] = []
+    for track in composition.tracks:
+        if track.instrument == "drums":
+            channel = 9
+        else:
+            if channel_index >= len(channels):
+                break
+            channel = channels[channel_index]
+            channel_index += 1
+        music_chunks.append(_music_track(track, channel, composition.settings.bpm))
     track_count = 1 + len(music_chunks)
     header = (
         b"MThd"

@@ -29,9 +29,17 @@ async function request<T>(path: string, signal?: AbortSignal, init?: RequestInit
   }
 
   if (!response.ok) {
-    const payload = await response.json().catch(() => null) as { error?: { code?: string; message?: string } } | null
+    const payload = await response.json().catch(() => null) as {
+      error?: { code?: string; message?: string }
+      detail?: Array<{ loc?: Array<string | number>; msg?: string }>
+    } | null
+    const validationIssue = payload?.detail?.[0]
+    const validationField = validationIssue?.loc?.at(-1)
+    const validationMessage = response.status === 422 && validationField === 'style'
+      ? '当前后端不支持所选生成风格，请重启 K线乐章后重试'
+      : validationIssue?.msg
     throw new MarketApiError(
-      payload?.error?.message || `行情服务返回 ${response.status}`,
+      payload?.error?.message || validationMessage || `行情服务返回 ${response.status}`,
       response.status,
       payload?.error?.code,
     )
