@@ -1,4 +1,5 @@
-import type { AssetSearchResponse, AssetSummary } from '../types/api'
+import { candles } from '../data'
+import type { AssetSearchResponse, AssetSummary, CandleSeriesResponse, DateRange } from '../types/api'
 
 export const mockAssets: AssetSummary[] = [
   {
@@ -99,4 +100,33 @@ export async function searchAssets(query: string): Promise<AssetSearchResponse> 
       )
     : mockAssets
   return { items, total: items.length }
+}
+
+export async function getMockCandles(asset: AssetSummary, range: DateRange): Promise<CandleSeriesResponse> {
+  await wait(220)
+  const items = candles.map((candle, index) => ({
+    ...candle,
+    date: new Date(Date.UTC(2026, 4, 1 + index)).toISOString().slice(0, 10),
+    amount: candle.volume * candle.close * 10000,
+  }))
+  return {
+    asset,
+    timeframe: '1d',
+    requestedStartDate: range.startDate,
+    requestedEndDate: range.endDate,
+    actualStartDate: items[0]?.date ?? null,
+    actualEndDate: items.at(-1)?.date ?? null,
+    items,
+    indicators: [],
+    analysis: {
+      trendState: 'bullish',
+      volatility20: 23.45,
+      latestRsi14: 62.35,
+      latestMacd: 2.35,
+      latestAtr14: 3.12,
+      latestMa20: 186.34,
+      latestMa60: 177.98,
+    },
+    warnings: ['当前使用 Mock 行情数据'],
+  }
 }

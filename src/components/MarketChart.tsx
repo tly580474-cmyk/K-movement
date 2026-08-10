@@ -1,6 +1,5 @@
 import { Maximize2, SlidersHorizontal } from 'lucide-react'
-import { candles } from '../data'
-import type { AssetSummary, DateRange } from '../types/api'
+import type { AssetSummary, CandleDto, DateRange, IndicatorPoint } from '../types/api'
 import { AssetSelector } from './AssetSelector'
 import { DateRangeControl } from './DateRangeControl'
 import { Panel } from './Panel'
@@ -8,45 +7,42 @@ import { Panel } from './Panel'
 const WIDTH = 680
 const HEIGHT = 278
 const PADDING = { top: 18, right: 46, bottom: 24, left: 8 }
-const minPrice = Math.min(...candles.map((item) => item.low)) - 2
-const maxPrice = Math.max(...candles.map((item) => item.high)) + 2
 const chartWidth = WIDTH - PADDING.left - PADDING.right
 const chartHeight = HEIGHT - PADDING.top - PADDING.bottom
 
-const yFor = (value: number) =>
-  PADDING.top + ((maxPrice - value) / (maxPrice - minPrice)) * chartHeight
-
-const xFor = (index: number) => PADDING.left + (index / candles.length) * chartWidth + 5
-
-function averageAt(index: number, window: number) {
+function averageAt(candles: CandleDto[], index: number, window: number) {
   const start = Math.max(0, index - window + 1)
   const values = candles.slice(start, index + 1)
   return values.reduce((total, candle) => total + candle.close, 0) / values.length
 }
 
-function linePath(window: number) {
+function linePath(candles: CandleDto[], window: number, xFor: (index: number) => number, yFor: (value: number) => number) {
   return candles
-    .map((_, index) => `${index === 0 ? 'M' : 'L'} ${xFor(index)} ${yFor(averageAt(index, window))}`)
+    .map((_, index) => `${index === 0 ? 'M' : 'L'} ${xFor(index)} ${yFor(averageAt(candles, index, window))}`)
     .join(' ')
 }
 
-function MiniIndicators() {
-  const rsiPath = Array.from({ length: 42 }, (_, index) => {
-    const x = 8 + index * 7.5
-    const y = 38 + Math.sin(index * 0.58) * 13 + Math.cos(index * 0.19) * 6
+function MiniIndicators({ indicators }: { indicators: IndicatorPoint[] }) {
+  const recent = indicators.slice(-42)
+  const rsiValues = recent.map((point) => point.rsi14)
+  const rsiPath = rsiValues.map((value, index) => {
+    const x = 8 + (index / Math.max(1, rsiValues.length - 1)) * 314
+    const y = value == null ? 42 : 68 - (value / 100) * 58
     return `${index === 0 ? 'M' : 'L'} ${x} ${y}`
   }).join(' ')
-
-  const macdPath = Array.from({ length: 42 }, (_, index) => {
-    const x = 8 + index * 7.5
-    const y = 45 - Math.sin(index * 0.28 - 1) * 17
+  const macdValues = recent.map((point) => point.macd ?? 0)
+  const maxMacd = Math.max(0.01, ...macdValues.map(Math.abs))
+  const macdPath = macdValues.map((value, index) => {
+    const x = 8 + (index / Math.max(1, macdValues.length - 1)) * 314
+    const y = 42 - (value / maxMacd) * 26
     return `${index === 0 ? 'M' : 'L'} ${x} ${y}`
   }).join(' ')
+  const latest = indicators.at(-1)
 
   return (
     <div className="indicator-row">
       <div className="mini-indicator">
-        <div className="mini-indicator__label">RSI(14) <b>62.35</b></div>
+        <div className="mini-indicator__label">RSI(14) <b>{latest?.rsi14?.toFixed(2) ?? '—'}</b></div>
         <svg viewBox="0 0 330 78" role="img" aria-label="RSI 指标示意图">
           <line x1="0" y1="22" x2="330" y2="22" />
           <line x1="0" y1="58" x2="330" y2="58" />
@@ -54,11 +50,11 @@ function MiniIndicators() {
         </svg>
       </div>
       <div className="mini-indicator">
-        <div className="mini-indicator__label">MACD(12,26,9) <b className="gold">DIF 2.35</b></div>
+        <div className="mini-indicator__label">MACD(12,26,9) <b className="gold">DIF {latest?.macd?.toFixed(2) ?? '—'}</b></div>
         <svg viewBox="0 0 330 78" role="img" aria-label="MACD 指标示意图">
           <line x1="0" y1="42" x2="330" y2="42" />
-          {Array.from({ length: 30 }, (_, index) => {
-            const value = Math.sin(index * 0.33 - 1.8) * 16
+          {recent.slice(-30).map((point, index) => {
+            const value = ((point.macdHistogram ?? 0) / maxMacd) * 22
             return (
               <rect
                 key={index}
@@ -83,11 +79,24 @@ interface MarketChartProps {
   onAssetChange: (asset: AssetSummary) => void
   dateRange: DateRange
   onDateRangeChange: (range: DateRange) => void
+  candles: CandleDto[]
+  indicators: IndicatorPoint[]
+  loading: boolean
+  error: string
+  warnings: string[]
 }
 
-export function MarketChart({ activeIndex, asset, onAssetChange, dateRange, onDateRangeChange }: MarketChartProps) {
+export function MarketChart({ activeIndex, asset, onAssetChange, dateRange, onDateRangeChange, candles, indicators, loading, error, warnings }: MarketChartProps) {
+  const minPrice = Math.min(...candles.map((item) => item.low)) * 0.995
+  const maxPrice = Math.max(...candles.map((item) => item.high)) * 1.005
+  const priceSpan = Math.max(0.01, maxPrice - minPrice)
+  const yFor = (value: number) => PADDING.top + ((maxPrice - value) / priceSpan) * chartHeight
+  const xFor = (index: number) => PADDING.left + (index / candles.length) * chartWidth + 5
   const candleWidth = Math.max(4, chartWidth / candles.length - 4)
   const active = Math.min(candles.length - 1, activeIndex)
+  const latestCandle = candles.at(-1)
+  const latestIndicator = indicators.at(-1)
+  const maxVolume = Math.max(1, ...candles.map((candle) => candle.volume ?? 0))
 
   return (
     <Panel
@@ -111,14 +120,18 @@ export function MarketChart({ activeIndex, asset, onAssetChange, dateRange, onDa
       </div>
 
       <div className="ma-legend" aria-label="移动平均线图例">
-        <span className="pink">MA5: 192.35</span>
-        <span className="gold">MA10: 189.21</span>
-        <span className="violet">MA20: 186.34</span>
-        <span className="blue">MA60: 177.98</span>
+        <span className="pink">MA5: {latestIndicator?.ma5?.toFixed(2) ?? '—'}</span>
+        <span className="gold">MA10: {latestIndicator?.ma10?.toFixed(2) ?? '—'}</span>
+        <span className="violet">MA20: {latestIndicator?.ma20?.toFixed(2) ?? '—'}</span>
+        <span className="blue">MA60: {latestIndicator?.ma60?.toFixed(2) ?? '—'}</span>
       </div>
 
+      {loading ? <div className="chart-status loading">正在加载真实行情…</div> : null}
+      {error ? <div className="chart-status error" role="alert">{error}</div> : null}
+      {!loading && !error && warnings.length ? <div className="chart-warning">{warnings[0]}</div> : null}
+
       <div className="candle-chart">
-        <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" aria-label={`${asset.name}日 K 线 Mock 图表`}>
+        <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" aria-label={`${asset.name}日 K 线行情图表`}>
           <defs>
             <filter id="activeGlow" x="-100%" y="-100%" width="300%" height="300%">
               <feGaussianBlur stdDeviation="4" result="blur" />
@@ -155,12 +168,14 @@ export function MarketChart({ activeIndex, asset, onAssetChange, dateRange, onDa
               </g>
             )
           })}
-          <path d={linePath(5)} className="ma-line ma-five" />
-          <path d={linePath(10)} className="ma-line ma-ten" />
-          <path d={linePath(20)} className="ma-line ma-twenty" />
-          <line x1="0" y1={yFor(193.42)} x2={WIDTH - 42} y2={yFor(193.42)} className="price-line" />
-          <rect x={WIDTH - 46} y={yFor(193.42) - 11} width="45" height="21" rx="5" className="price-tag" />
-          <text x={WIDTH - 42} y={yFor(193.42) + 4} className="price-tag-text">193.42</text>
+          <path d={linePath(candles, 5, xFor, yFor)} className="ma-line ma-five" />
+          <path d={linePath(candles, 10, xFor, yFor)} className="ma-line ma-ten" />
+          <path d={linePath(candles, 20, xFor, yFor)} className="ma-line ma-twenty" />
+          {latestCandle ? <>
+            <line x1="0" y1={yFor(latestCandle.close)} x2={WIDTH - 42} y2={yFor(latestCandle.close)} className="price-line" />
+            <rect x={WIDTH - 49} y={yFor(latestCandle.close) - 11} width="48" height="21" rx="5" className="price-tag" />
+            <text x={WIDTH - 46} y={yFor(latestCandle.close) + 4} className="price-tag-text">{latestCandle.close.toFixed(2)}</text>
+          </> : null}
         </svg>
       </div>
 
@@ -170,11 +185,11 @@ export function MarketChart({ activeIndex, asset, onAssetChange, dateRange, onDa
           <i
             key={candle.date}
             className={candle.close >= candle.open ? 'up' : 'down'}
-            style={{ height: `${Math.max(14, candle.volume)}%` }}
+            style={{ height: `${Math.max(10, ((candle.volume ?? 0) / maxVolume) * 100)}%` }}
           />
         ))}
       </div>
-      <MiniIndicators />
+      <MiniIndicators indicators={indicators} />
     </Panel>
   )
 }

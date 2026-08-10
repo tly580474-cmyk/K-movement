@@ -1,5 +1,6 @@
 import { Info, Music2, Sparkles } from 'lucide-react'
 import { melodyNotes, pianoKeys } from '../data'
+import type { CompositionDto, MusicNoteDto } from '../types/api'
 import { Panel } from './Panel'
 
 function StaffMelody() {
@@ -35,12 +36,12 @@ function StaffMelody() {
   )
 }
 
-function PianoKeyboard({ activePitch }: { activePitch: number }) {
+function PianoKeyboard({ activeMidi }: { activeMidi: number | null }) {
   return (
     <div className="piano-keyboard" aria-label="钢琴键盘">
       {pianoKeys.map((label, index) => {
         const isBlack = [1, 3, 6, 8, 10].includes(index % 12)
-        const isActive = index === activePitch + 8
+        const isActive = activeMidi !== null && index === activeMidi - 48
         return (
           <div
             key={`${label}-${index}`}
@@ -55,20 +56,32 @@ function PianoKeyboard({ activePitch }: { activePitch: number }) {
   )
 }
 
-export function MelodyPanel({ progress }: { progress: number }) {
-  const activeNote = melodyNotes.reduce((current, note) => (
+export function MelodyPanel({ progress, currentSeconds, composition }: { progress: number; currentSeconds: number; composition: CompositionDto | null }) {
+  const generatedNotes = composition?.tracks[0]?.notes ?? []
+  const activeGeneratedNote = generatedNotes.reduce<MusicNoteDto | null>(
+    (current, note) => note.startSeconds <= currentSeconds ? note : current,
+    generatedNotes[0] ?? null,
+  )
+  const fallbackActive = melodyNotes.reduce((current, note) => (
     note.start <= progress && note.start + note.duration >= progress ? note : current
   ), melodyNotes[0])
+  const duration = Math.max(composition?.durationSeconds ?? 0, 0.001)
+  const rollNotes: Array<MusicNoteDto & { tone: 'blue' | 'violet' | 'gold' }> = generatedNotes.map((note, index) => ({
+    ...note,
+    tone: index / Math.max(1, generatedNotes.length - 1) > 0.68 ? 'gold' : index / Math.max(1, generatedNotes.length - 1) > 0.34 ? 'violet' : 'blue',
+  }))
+  const currentMotif = composition?.motifs.find((motif) => motif.id === activeGeneratedNote?.motifId)
+  const musicalMode = composition ? `${composition.settings.musicalKey} ${composition.settings.scale}` : '待生成'
 
   return (
     <Panel
       title="旋律可视化"
       className="melody-panel"
-      action={<span className="mapping-strength">映射强度 <b>88%</b><i><em /></i></span>}
+      action={<span className="mapping-strength">映射强度 <b>{Math.round((composition?.settings.mappingStrength ?? 0.88) * 100)}%</b><i><em /></i></span>}
     >
       <div className="mode-row">
-        <span>当前调式 · <b>C Major</b></span>
-        <span className="motif-chip"><Sparkles size={13} /> 旋律动机 #32</span>
+        <span>当前调式 · <b>{musicalMode}</b></span>
+        <span className="motif-chip"><Sparkles size={13} /> {currentMotif?.label ?? '等待生成'}</span>
       </div>
       <StaffMelody />
 
@@ -78,14 +91,18 @@ export function MelodyPanel({ progress }: { progress: number }) {
         </div>
         <div className="note-grid">
           <div className="beat-grid" />
-          {melodyNotes.map((note) => (
+          {(rollNotes.length ? rollNotes : melodyNotes.map((note) => ({
+            id: String(note.id), trackId: 'mock', midi: 56 - note.pitch, pitchName: '',
+            startSeconds: note.start, durationSeconds: note.duration, velocity: 80,
+            candleIndex: note.id - 1, motifId: 'mock', tone: note.tone,
+          }))).map((note) => (
             <i
               key={note.id}
-              className={`roll-note ${note.tone} ${note.id === activeNote.id ? 'active' : ''}`}
+              className={`roll-note ${note.tone} ${String(note.id) === String(activeGeneratedNote?.id ?? fallbackActive.id) ? 'active' : ''}`}
               style={{
-                left: `${note.start}%`,
-                width: `${note.duration}%`,
-                top: `${10 + note.pitch * 10}%`,
+                left: `${composition ? note.startSeconds / duration * 100 : note.startSeconds}%`,
+                width: `${composition ? Math.max(0.7, note.durationSeconds / duration * 100) : note.durationSeconds}%`,
+                top: `${8 + (84 - note.midi) / 36 * 72}%`,
               }}
             />
           ))}
@@ -97,8 +114,8 @@ export function MelodyPanel({ progress }: { progress: number }) {
           </div>
         </div>
       </div>
-      <PianoKeyboard activePitch={activeNote.pitch} />
-      <div className="sync-badge" aria-live="polite"><Music2 size={18} /><span>数据映射中</span><Info size={12} /></div>
+      <PianoKeyboard activeMidi={activeGeneratedNote?.midi ?? null} />
+      <div className="sync-badge" aria-live="polite"><Music2 size={18} /><span>{composition ? '播放同步中' : '等待生成'}</span><Info size={12} /></div>
     </Panel>
   )
 }

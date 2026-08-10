@@ -1,21 +1,28 @@
 import { ChevronRight, RefreshCw, TrendingUp } from 'lucide-react'
-import type { AssetSummary } from '../types/api'
+import type { AssetSummary, CandleDto, CompositionDto, GenerationSettings, MarketAnalysis } from '../types/api'
 import { Panel } from './Panel'
 
 interface InspectorProps {
   asset: AssetSummary
-  bpm: number
-  setBpm: (value: number) => void
-  musicalKey: string
-  setMusicalKey: (value: string) => void
-  style: string
-  setStyle: (value: string) => void
+  analysis: MarketAnalysis | null
+  latestCandle: CandleDto | null
+  warnings: string[]
+  settings: GenerationSettings
+  onSettingsChange: (patch: Partial<GenerationSettings>) => void
   onGenerate: () => void
   generating: boolean
+  generationError: string
+  canGenerate: boolean
 }
 
-export function Inspector({ asset, bpm, setBpm, musicalKey, setMusicalKey, style, setStyle, onGenerate, generating }: InspectorProps) {
+export function Inspector({ asset, analysis, latestCandle, warnings, settings, onSettingsChange, onGenerate, generating, generationError, canGenerate }: InspectorProps) {
   const rising = asset.change >= 0
+  const trendLabel = {
+    bullish: 'Bullish',
+    bearish: 'Bearish',
+    sideways: 'Sideways',
+    unknown: 'Unknown',
+  }[analysis?.trendState ?? 'unknown']
   return (
     <aside className="inspector">
       <Panel title="市场信息" action={<ChevronRight size={16} />} className="market-summary">
@@ -28,48 +35,54 @@ export function Inspector({ asset, bpm, setBpm, musicalKey, setMusicalKey, style
           <path d="M2 56 L18 54 L29 47 L41 50 L52 40 L65 44 L77 35 L89 39 L101 28 L112 31 L124 18 L137 24 L149 13 L162 17 L176 8 L188 11" />
         </svg>
         <dl className="stats-grid">
-          <dt>开盘</dt><dd>191.10</dd><dt>最高</dt><dd>194.02</dd>
-          <dt>最低</dt><dd>190.48</dd><dt>成交量</dt><dd>63.25M</dd>
-          <dt>成交额</dt><dd>12.19B</dd><dt>数据日</dt><dd>{asset.lastDataDate?.slice(5) ?? '未知'}</dd>
+          <dt>开盘</dt><dd>{latestCandle?.open.toFixed(2) ?? '—'}</dd><dt>最高</dt><dd>{latestCandle?.high.toFixed(2) ?? '—'}</dd>
+          <dt>最低</dt><dd>{latestCandle?.low.toFixed(2) ?? '—'}</dd><dt>成交量</dt><dd>{latestCandle?.volume == null ? '—' : `${(latestCandle.volume / 1_000_000).toFixed(2)}M`}</dd>
+          <dt>成交额</dt><dd>{latestCandle?.amount == null ? '—' : `${(latestCandle.amount / 1_000_000_000).toFixed(2)}B`}</dd><dt>数据日</dt><dd>{asset.lastDataDate?.slice(5) ?? '未知'}</dd>
         </dl>
-        <div className="trend-state"><span>趋势状态</span><b>Bullish</b><TrendingUp size={18} /></div>
+        <div className={`trend-state ${analysis?.trendState ?? 'unknown'}`}><span>趋势状态</span><b>{trendLabel}</b><TrendingUp size={18} /></div>
         <dl className="indicator-stats">
-          <dt>波动率(20)</dt><dd>23.45%</dd>
-          <dt>RSI(14)</dt><dd>62.35</dd>
-          <dt>MACD</dt><dd>2.35</dd>
-          <dt>均线趋势</dt><dd>多头排列</dd>
+          <dt>波动率(20)</dt><dd>{analysis?.volatility20?.toFixed(2) ?? '—'}%</dd>
+          <dt>RSI(14)</dt><dd>{analysis?.latestRsi14?.toFixed(2) ?? '—'}</dd>
+          <dt>MACD</dt><dd>{analysis?.latestMacd?.toFixed(2) ?? '—'}</dd>
+          <dt>ATR(14)</dt><dd>{analysis?.latestAtr14?.toFixed(2) ?? '—'}</dd>
         </dl>
+        {warnings.length ? <div className="data-warning" title={warnings.join('；')}>{warnings[0]}</div> : null}
       </Panel>
 
       <Panel title="音乐生成参数" action={<ChevronRight size={16} />} className="generation-panel">
         <label>生成风格
-          <select value={style} onChange={(event) => setStyle(event.target.value)}>
-            <option value="交响乐">交响乐 (Orchestral)</option>
-            <option value="氛围钢琴">氛围钢琴 (Piano)</option>
-            <option value="电子合成">电子合成 (Synth)</option>
+          <select value={settings.style} onChange={(event) => onSettingsChange({ style: event.target.value as GenerationSettings['style'] })}>
+            <option value="orchestral">交响乐 (Orchestral)</option>
+            <option value="piano">氛围钢琴 (Piano)</option>
+            <option value="synth">电子合成 (Synth)</option>
+            <option value="lofi">低保真 (Lo-fi)</option>
           </select>
         </label>
         <label>乐器编制
-          <select defaultValue="Piano + Strings + Bass">
-            <option>Piano + Strings + Bass</option>
-            <option>Piano Solo</option>
-            <option>Synth + Bass + Drums</option>
+          <select value={settings.instruments.join(',')} onChange={(event) => onSettingsChange({ instruments: event.target.value.split(',') })}>
+            <option value="piano,strings,bass">Piano + Strings + Bass</option>
+            <option value="piano">Piano Solo</option>
+            <option value="synth,bass,drums">Synth + Bass + Drums</option>
           </select>
         </label>
         <label>BPM
-          <input type="number" min="60" max="160" value={bpm} onChange={(event) => setBpm(Number(event.target.value))} />
+          <input type="number" min="60" max="160" value={settings.bpm} onChange={(event) => onSettingsChange({ bpm: Number(event.target.value) })} />
         </label>
         <label>调式
-          <select value={musicalKey} onChange={(event) => setMusicalKey(event.target.value)}>
-            <option>C Major</option><option>A Minor</option><option>G Major</option><option>D Minor</option>
+          <select value={`${settings.musicalKey}:${settings.scale}`} onChange={(event) => {
+            const [musicalKey, scale] = event.target.value.split(':') as [GenerationSettings['musicalKey'], GenerationSettings['scale']]
+            onSettingsChange({ musicalKey, scale })
+          }}>
+            <option value="C:major-pentatonic">C Major Pentatonic</option><option value="A:minor-pentatonic">A Minor Pentatonic</option><option value="G:major">G Major</option><option value="D:minor">D Minor</option>
           </select>
         </label>
         <label>情感色彩
-          <select defaultValue="激昂 / 向上"><option>激昂 / 向上</option><option>平静 / 舒缓</option><option>紧张 / 波动</option></select>
+          <select value={settings.mood} onChange={(event) => onSettingsChange({ mood: event.target.value as GenerationSettings['mood'] })}><option value="upward">激昂 / 向上</option><option value="calm">平静 / 舒缓</option><option value="tense">紧张 / 波动</option><option value="dark">低沉 / 回落</option></select>
         </label>
-        <button className="generate-button" onClick={onGenerate} disabled={generating}>
+        {generationError ? <div className="generation-error" role="alert">{generationError}</div> : null}
+        <button className="generate-button" onClick={onGenerate} disabled={generating || !canGenerate} aria-busy={generating}>
           <RefreshCw size={16} className={generating ? 'spinning' : ''} />
-          {generating ? '生成乐章中…' : '重新生成'}
+          {generating ? '生成乐章中…' : canGenerate ? '生成市场乐章' : '等待真实行情'}
         </button>
       </Panel>
 
@@ -77,11 +90,14 @@ export function Inspector({ asset, bpm, setBpm, musicalKey, setMusicalKey, style
   )
 }
 
-export function StructurePanel() {
+export function StructurePanel({ composition, activeMotif }: { composition: CompositionDto | null; activeMotif: number }) {
+  const motif = composition?.motifs[activeMotif]
+  const duration = composition?.durationSeconds ?? 0
+  const formatTime = (seconds: number) => `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(Math.round(seconds % 60)).padStart(2, '0')}`
   return (
     <Panel title="乐章结构" className="structure-panel">
       <div className="structure-content">
-        <dl><dt>结构类型</dt><dd>变奏曲式 (Rondo)</dd><dt>总时长</dt><dd>02:45</dd><dt>小节数</dt><dd>64小节</dd><dt>当前片段</dt><dd>动机 #32</dd></dl>
+        <dl><dt>编曲结构</dt><dd>{composition ? `${composition.tracks.length} 轨自动和声` : '尚未生成'}</dd><dt>总时长</dt><dd>{formatTime(duration)}</dd><dt>小节数</dt><dd>{composition?.totalBars ?? 0} 小节</dd><dt>当前片段</dt><dd>{motif?.label ?? '尚未生成'}</dd></dl>
         <div className="structure-ring"><span>♪</span><i /><b /><em /></div>
       </div>
     </Panel>

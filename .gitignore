@@ -4,6 +4,10 @@ dist/
 .env
 .env.*
 !.env.example
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
 outputs/
 *.mid
 *.wav
@@ -11,4 +15,3 @@ outputs/
 *.log
 .DS_Store
 Thumbs.db
-

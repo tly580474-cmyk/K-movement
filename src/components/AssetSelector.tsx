@@ -1,6 +1,6 @@
 import { ChevronDown, LoaderCircle, Search, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { searchAssets } from '../services/mockApi'
+import { searchAssets } from '../services/marketApi'
 import type { AssetSummary } from '../types/api'
 
 interface AssetSelectorProps {
@@ -15,20 +15,28 @@ export function AssetSelector({ value, onChange }: AssetSelectorProps) {
   const [query, setQuery] = useState('')
   const [items, setItems] = useState<AssetSummary[]>([])
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
   const rootRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (!open) return
     let cancelled = false
+    const controller = new AbortController()
     setLoading(true)
-    searchAssets(query).then((response) => {
-      if (!cancelled) {
-        setItems(response.items)
-        setLoading(false)
-      }
-    })
-    return () => { cancelled = true }
+    setError('')
+    searchAssets(query, controller.signal)
+      .then((response) => {
+        if (!cancelled) setItems(response.items)
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled && !(reason instanceof DOMException && reason.name === 'AbortError')) {
+          setItems([])
+          setError(reason instanceof Error ? reason.message : '标的搜索失败')
+        }
+      })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true; controller.abort() }
   }, [open, query])
 
   useEffect(() => {
@@ -65,7 +73,8 @@ export function AssetSelector({ value, onChange }: AssetSelectorProps) {
           </label>
           <div className="asset-results" role="listbox" aria-label="标的搜索结果">
             {loading ? <div className="asset-state"><LoaderCircle size={16} className="spinning" /> 搜索中…</div> : null}
-            {!loading && items.length === 0 ? <div className="asset-state">没有匹配的股票或指数</div> : null}
+            {!loading && error ? <div className="asset-state error">{error}</div> : null}
+            {!loading && !error && items.length === 0 ? <div className="asset-state">没有匹配的股票或指数</div> : null}
             {!loading && items.map((asset) => (
               <button key={asset.assetId} role="option" aria-selected={asset.assetId === value.assetId} onClick={() => selectAsset(asset)}>
                 <span className="asset-result__main"><b>{asset.symbol}</b><em>{asset.name}</em></span>
