@@ -44,7 +44,13 @@ export class CompositionAudioPlayer {
         urls: { C4: 'C4.mp3', 'D#4': 'Ds4.mp3', 'F#4': 'Fs4.mp3', A4: 'A4.mp3' },
         baseUrl: PIANO_SAMPLE_BASE,
         attack: 0,
-        release: composition.settings.style === 'ambient-minimal' ? 2.4 : 1.25,
+        release: composition.settings.style === 'ambient-minimal'
+          ? 3.2
+          : composition.settings.style === 'piano'
+            ? 2.8
+            : ['jazz-lounge', 'lofi'].includes(composition.settings.style)
+              ? 2.2
+              : 1.6,
         volume: -5,
       }).connect(this.space)
       try {

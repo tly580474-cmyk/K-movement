@@ -3,7 +3,7 @@ from datetime import date, timedelta
 import pytest
 
 from app.midi import composition_to_midi
-from app.music import generate_composition
+from app.music import _swing_beat, generate_composition
 from app.schemas import (
     AssetSummary,
     Candle,
@@ -90,7 +90,8 @@ def test_mapping_is_deterministic_and_preserves_candle_links() -> None:
     assert linked_candles < set(range(16))
     assert 0.7 <= len(linked_candles) / 16 <= 0.9
     assert all(48 <= note.midi <= 88 for note in melody)
-    assert all(note.midi % 12 in {0, 2, 4, 7, 9} for note in first.tracks[0].notes)
+    assert all(note.midi % 12 in {0, 2, 4, 7, 9} for note in melody if note.motif_id != "motif-3")
+    assert all(note.midi % 12 in {0, 3, 5, 7, 10} for note in melody if note.motif_id == "motif-3")
     assert all(32 <= note.velocity <= 122 for note in melody)
     assert all(abs(left.midi - right.midi) <= 12 for left, right in zip(melody, melody[1:]))
     assert all(abs(left.velocity - right.velocity) <= 12 for left, right in zip(melody, melody[1:]))
@@ -99,7 +100,7 @@ def test_mapping_is_deterministic_and_preserves_candle_links() -> None:
     assert len(first.tracks[1].notes) > first.total_bars * 3
     assert len(first.tracks[2].notes) >= first.total_bars
     assert first.tracks[1].notes[0].start_seconds == first.tracks[1].notes[1].start_seconds
-    assert any(right.start_seconds > left.start_seconds + left.duration_seconds for left, right in zip(melody, melody[1:]))
+    assert any(left.start_seconds + left.duration_seconds >= right.start_seconds for left, right in zip(melody, melody[1:]))
     assert first.motifs[0].start_seconds == 0
     assert [motif.label for motif in first.motifs] == ["A", "A′", "B", "A″"]
     assert first.duration_seconds > 0
@@ -110,8 +111,11 @@ def test_harmony_uses_voice_leading_rhythm_and_hierarchical_cadences() -> None:
     harmony = composition.tracks[1].notes
     seconds_per_beat = 60 / composition.settings.bpm
     seconds_per_bar = 4 * seconds_per_beat
-    assert {round((note.start_seconds / seconds_per_beat) % 4, 6) for note in harmony} <= {0.0, 2.0}
-    assert all(note.duration_seconds < seconds_per_bar for note in harmony)
+    assert {round((note.start_seconds / seconds_per_beat) % 4, 6) for note in harmony} <= {0.0, 1.0, 2.0, 3.0}
+    assert all(
+        note.duration_seconds < seconds_per_bar or note.start_seconds == pytest.approx(composition.duration_seconds - seconds_per_bar)
+        for note in harmony
+    )
     voicings = []
     for bar in range(composition.total_bars):
         voicing = sorted(note.midi for note in harmony if abs(note.start_seconds - bar * seconds_per_bar) < 1e-6)
@@ -124,7 +128,9 @@ def test_harmony_uses_voice_leading_rhythm_and_hierarchical_cadences() -> None:
     for section in range(4):
         bar_start = ((section + 1) * section_bars - 1) * seconds_per_bar
         cadence_pitch_classes.append({note.midi % 12 for note in harmony if abs(note.start_seconds - bar_start) < 1e-6})
-    assert cadence_pitch_classes == [{2, 7, 11}, {2, 7, 11}, {0, 4, 9}, {0, 4, 7}]
+    assert cadence_pitch_classes == [{2, 7, 11}, {2, 7, 11}, {0, 3, 8}, {0, 4, 7}]
+    b_dominant_start = (section_bars * 3 - 2) * seconds_per_bar
+    assert {note.midi % 12 for note in harmony if abs(note.start_seconds - b_dominant_start) < 1e-6} == {2, 7, 11}
 
 
 def test_form_uses_contrasting_b_section_and_long_phrase_endings() -> None:
@@ -133,15 +139,16 @@ def test_form_uses_contrasting_b_section_and_long_phrase_endings() -> None:
     section_seconds = composition.duration_seconds / 4
     a_pitches = [note.midi for note in melody if note.start_seconds < section_seconds]
     b_pitches = [note.midi for note in melody if section_seconds * 2 <= note.start_seconds < section_seconds * 3]
-    cadence_notes = [
-        note for note in melody
-        if any(abs(note.start_seconds - (section * section_seconds - 2 * 60 / composition.settings.bpm)) < 1e-6 for section in range(1, 5))
-    ]
+    cadence_starts = [section_seconds - 2 * 60 / composition.settings.bpm, section_seconds * 2 - 2 * 60 / composition.settings.bpm, section_seconds * 3 - 2 * 60 / composition.settings.bpm, composition.duration_seconds - 4 * 60 / composition.settings.bpm]
+    cadence_notes = [next(note for note in melody if abs(note.start_seconds - start) < 1e-6) for start in cadence_starts]
 
     assert sum(b_pitches) / len(b_pitches) > sum(a_pitches) / len(a_pitches) + 4
-    assert len(cadence_notes) == 4
+    harmony = composition.tracks[1].notes
+    a_harmony_onsets = {note.start_seconds for note in harmony if note.motif_id == "motif-1"}
+    b_harmony_onsets = {note.start_seconds for note in harmony if note.motif_id == "motif-3"}
+    assert len(b_harmony_onsets) > len(a_harmony_onsets)
     seconds_per_beat = 60 / composition.settings.bpm
-    assert [note.duration_seconds for note in cadence_notes] == pytest.approx([1.25 * seconds_per_beat, 1.25 * seconds_per_beat, 1.5 * seconds_per_beat, 2 * seconds_per_beat])
+    assert [note.duration_seconds for note in cadence_notes] == pytest.approx([1.25 * seconds_per_beat, 1.25 * seconds_per_beat, 1.5 * seconds_per_beat, 4 * seconds_per_beat])
 
     a_theme = [note.midi for note in melody if note.motif_id == "motif-1"][:8]
     return_start = composition.motifs[3].start_seconds
@@ -163,6 +170,8 @@ def test_quiet_bars_silence_melody_harmony_and_bass_together() -> None:
     for bar in silent_harmony_bars:
         assert not any(bar * seconds_per_bar <= note.start_seconds < (bar + 1) * seconds_per_bar for note in melody)
         assert not any(bar * seconds_per_bar <= note.start_seconds < (bar + 1) * seconds_per_bar for note in bass)
+    for bar in set(range(composition.total_bars)) - set(silent_harmony_bars):
+        assert any(bar * seconds_per_bar <= note.start_seconds < (bar + 1) * seconds_per_bar for note in melody)
 
 
 def test_jazz_swing_and_style_specific_bass_patterns() -> None:
@@ -174,9 +183,19 @@ def test_jazz_swing_and_style_specific_bass_patterns() -> None:
     jazz_beats = [round(note.start_seconds / seconds_per_beat, 2) for note in jazz.tracks[1].notes]
 
     assert any(abs(beat % 1 - 0.64) < 1e-6 for beat in jazz_beats)
+    assert _swing_beat(0.25, "jazz-lounge") == pytest.approx(0.32)
+    assert _swing_beat(0.75, "jazz-lounge") == pytest.approx(0.82)
     assert len(jazz.tracks[2].notes) > len(ambient.tracks[2].notes)
     assert len(rock.tracks[2].notes) == len(jazz.tracks[2].notes)
     assert len({note.midi for note in jazz.tracks[2].notes}) >= 4
+    jazz_voicings = []
+    seconds_per_bar = 4 * seconds_per_beat
+    for bar in range(jazz.total_bars):
+        bar_notes = [note for note in jazz.tracks[1].notes if bar * seconds_per_bar <= note.start_seconds < (bar + 1) * seconds_per_bar]
+        if bar_notes:
+            first_start = min(note.start_seconds for note in bar_notes)
+            jazz_voicings.append(sorted(note.midi for note in bar_notes if note.start_seconds == first_start))
+    assert all(sum(abs(left - right) for left, right in zip(first, second)) <= 8 for first, second in zip(jazz_voicings, jazz_voicings[1:]))
 
 
 def test_rock_drums_mark_sections_with_crashes_and_fills() -> None:
@@ -186,6 +205,25 @@ def test_rock_drums_mark_sections_with_crashes_and_fills() -> None:
 
     assert sum(note.midi == 49 for note in drums) == 4
     assert sum(note.midi in {45, 47} for note in drums) == 12
+
+
+def test_cinematic_crashes_chinese_arpeggios_and_final_sustain() -> None:
+    base = _request()
+    cinematic = generate_composition(base.model_copy(update={"settings": base.settings.model_copy(update={"style": "cinematic-epic"})}), _series())
+    chinese = generate_composition(base.model_copy(update={"settings": base.settings.model_copy(update={"style": "chinese-folk"})}), _series())
+    cinematic_drums = cinematic.tracks[-1]
+    seconds_per_beat = 60 / chinese.settings.bpm
+    chinese_harmony_starts = {
+        round(note.start_seconds / seconds_per_beat, 2)
+        for note in chinese.tracks[1].notes
+        if note.start_seconds < 4 * seconds_per_beat
+    }
+
+    assert cinematic_drums.id == "drums"
+    assert sum(note.midi == 49 for note in cinematic_drums.notes) == 4
+    assert chinese_harmony_starts == {0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5}
+    assert chinese.tracks[0].notes[-1].duration_seconds == pytest.approx(4 * seconds_per_beat)
+    assert chinese.tracks[2].notes[-1].duration_seconds == pytest.approx(3.9 * seconds_per_beat)
 
 
 def test_market_trend_selects_scale_quality() -> None:
