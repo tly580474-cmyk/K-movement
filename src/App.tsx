@@ -8,6 +8,7 @@ import { Sidebar } from './components/Sidebar'
 import { TransportBar } from './components/TransportBar'
 import { candles as mockCandles } from './data'
 import { CompositionAudioPlayer } from './services/audioPlayer'
+import { buildPlaybackTimeline } from './services/playbackTimeline'
 import { mockAssets } from './services/mockApi'
 import { createComposition, downloadCompositionMidi, getCandles } from './services/marketApi'
 import type { CandleDto, CandleSeriesResponse, CompositionDto, DateRange, GenerationSettings } from './types/api'
@@ -28,6 +29,7 @@ function App() {
   const [progress, setProgress] = useState(0)
   const [currentSeconds, setCurrentSeconds] = useState(0)
   const [volume, setVolume] = useState(72)
+  const [playBreaths, setPlayBreaths] = useState(true)
   const [settings, setSettings] = useState<GenerationSettings>(defaultSettings)
   const [generating, setGenerating] = useState(false)
   const [generationError, setGenerationError] = useState('')
@@ -39,6 +41,7 @@ function App() {
   const [series, setSeries] = useState<CandleSeriesResponse | null>(null)
   const [marketLoading, setMarketLoading] = useState(true)
   const [marketError, setMarketError] = useState('')
+  const playbackTimeline = useMemo(() => buildPlaybackTimeline(composition, playBreaths), [composition, playBreaths])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -65,14 +68,14 @@ function App() {
     if (!playing || !composition) return
     let frame = 0
     const update = () => {
-      const seconds = Math.min(player.current.currentSeconds, composition.durationSeconds)
-      setCurrentSeconds(seconds)
-      setProgress(composition.durationSeconds ? seconds / composition.durationSeconds * 100 : 0)
+      const playbackSeconds = Math.min(player.current.currentSeconds, playbackTimeline.durationSeconds)
+      setCurrentSeconds(playbackTimeline.toSourceSeconds(playbackSeconds))
+      setProgress(playbackTimeline.durationSeconds ? playbackSeconds / playbackTimeline.durationSeconds * 100 : 0)
       frame = window.requestAnimationFrame(update)
     }
     frame = window.requestAnimationFrame(update)
     return () => window.cancelAnimationFrame(frame)
-  }, [playing, composition])
+  }, [playing, composition, playbackTimeline])
 
   useEffect(() => () => player.current.dispose(), [])
 
@@ -112,7 +115,7 @@ function App() {
         setPlaying(false)
         setCurrentSeconds(generated.durationSeconds)
         setProgress(100)
-      })
+      }, playBreaths)
       player.current.setVolume(volume)
       if (audioResult.sampleFallback) setPlaybackError('钢琴采样加载失败，已切换为本地柔和音色')
       setComposition(generated)
@@ -147,16 +150,17 @@ function App() {
 
   const handleSeek = (nextProgress: number) => {
     const clamped = Math.max(0, Math.min(100, nextProgress))
-    const seconds = composition ? composition.durationSeconds * clamped / 100 : 0
-    player.current.seek(seconds)
-    setCurrentSeconds(seconds)
+    const playbackSeconds = playbackTimeline.durationSeconds * clamped / 100
+    player.current.seek(playbackSeconds)
+    setCurrentSeconds(playbackTimeline.toSourceSeconds(playbackSeconds))
     setProgress(clamped)
   }
 
   const handleMotifSelect = (index: number) => {
     const motif = composition?.motifs[index]
     if (!motif || !composition) return
-    handleSeek(motif.startSeconds / composition.durationSeconds * 100)
+    const playbackSeconds = playbackTimeline.toPlaybackSeconds(motif.startSeconds)
+    handleSeek(playbackTimeline.durationSeconds ? playbackSeconds / playbackTimeline.durationSeconds * 100 : 0)
   }
 
   const handleAssetChange = (nextAsset: typeof asset) => {
@@ -198,6 +202,24 @@ function App() {
     player.current.setVolume(value)
   }
 
+  const handlePlayBreathsChange = async (nextValue: boolean) => {
+    if (nextValue === playBreaths) return
+    const wasPlaying = playing
+    const nextTimeline = buildPlaybackTimeline(composition, nextValue)
+    player.current.setPlayBreaths(nextValue, currentSeconds)
+    setPlaying(false)
+    setPlayBreaths(nextValue)
+    const nextPlaybackSeconds = nextTimeline.toPlaybackSeconds(currentSeconds)
+    setProgress(nextTimeline.durationSeconds ? nextPlaybackSeconds / nextTimeline.durationSeconds * 100 : 0)
+    if (!wasPlaying || !composition) return
+    try {
+      await player.current.play()
+      setPlaying(true)
+    } catch (reason) {
+      setPlaybackError(reason instanceof Error ? reason.message : '音频播放恢复失败')
+    }
+  }
+
   return (
     <div className="app-shell">
       <div className="ambient ambient--one" />
@@ -218,7 +240,7 @@ function App() {
             error={marketError}
             warnings={series?.warnings ?? []}
           />
-          <MelodyPanel progress={progress} currentSeconds={currentSeconds} composition={composition} />
+          <MelodyPanel progress={progress} currentSeconds={currentSeconds} composition={composition} playbackTimeline={playbackTimeline} />
           <Inspector
             asset={asset}
             analysis={series?.analysis ?? null}
@@ -242,9 +264,12 @@ function App() {
           asset={asset}
           dateRange={dateRange}
           composition={composition}
+          playbackDuration={playbackTimeline.durationSeconds}
           playbackError={playbackError}
           volume={volume}
           onVolumeChange={handleVolumeChange}
+          playBreaths={playBreaths}
+          onPlayBreathsChange={handlePlayBreathsChange}
         />
         <div className="bottom-grid">
           <MotifTimeline activeMotif={activeMotif} onSelect={handleMotifSelect} motifs={composition?.motifs ?? []} />

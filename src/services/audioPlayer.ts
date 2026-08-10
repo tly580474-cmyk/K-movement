@@ -1,4 +1,5 @@
 import type { CompositionDto, MusicNoteDto, MusicStyle } from '../types/api'
+import { buildPlaybackTimeline, type PlaybackTimeline } from './playbackTimeline'
 
 const PIANO_SAMPLE_BASE = 'https://tonejs.github.io/audio/salamander/'
 const sampledStyles = new Set<MusicStyle>(['orchestral', 'piano', 'lofi', 'jazz-lounge', 'cinematic-epic', 'ambient-minimal'])
@@ -16,10 +17,12 @@ export class CompositionAudioPlayer {
   private space: import('tone').Reverb | null = null
   private master: import('tone').Gain | null = null
   private compositionId = ''
+  private composition: CompositionDto | null = null
+  private timeline: PlaybackTimeline = buildPlaybackTimeline(null, true)
   private endEventId: number | null = null
   private onEnded: (() => void) | null = null
 
-  async load(composition: CompositionDto, onEnded: () => void): Promise<{ sampledPiano: boolean; sampleFallback: boolean }> {
+  async load(composition: CompositionDto, onEnded: () => void, playBreaths = true): Promise<{ sampledPiano: boolean; sampleFallback: boolean }> {
     this.tone ??= await import('tone')
     const Tone = this.tone
     this.releaseAndDispose()
@@ -88,18 +91,38 @@ export class CompositionAudioPlayer {
     }
 
     this.compositionId = composition.id
+    this.composition = composition
     this.onEnded = onEnded
+    this.reschedule(playBreaths)
+    return { sampledPiano, sampleFallback }
+  }
+
+  setPlayBreaths(playBreaths: boolean, sourceSeconds: number): void {
+    if (!this.composition || !this.tone) return
+    const transport = this.tone.getTransport()
+    transport.pause()
+    this.releaseAll()
+    this.reschedule(playBreaths)
+    transport.seconds = this.timeline.toPlaybackSeconds(sourceSeconds)
+  }
+
+  private reschedule(playBreaths: boolean): void {
+    if (!this.composition || !this.tone) return
+    const composition = this.composition
+    const transport = this.tone.getTransport()
+    transport.cancel(0)
+    this.timeline = buildPlaybackTimeline(composition, playBreaths)
     const melodyTrack = composition.tracks.find((track) => track.id === 'melody')
     const harmonyTrack = composition.tracks.find((track) => track.id === 'harmony')
     const bassTrack = composition.tracks.find((track) => track.id === 'bass')
+    const drumTrack = composition.tracks.find((track) => track.id === 'drums')
     this.scheduleTrack(melodyTrack?.notes ?? [], 'melody')
     this.scheduleTrack(harmonyTrack?.notes ?? [], harmonyTrack?.instrument === 'piano' ? 'melody' : 'harmony')
     this.scheduleTrack(bassTrack?.notes ?? [], bassTrack?.instrument === 'piano' ? 'melody' : 'bass')
     this.scheduleTrack(drumTrack?.notes ?? [], 'drums')
     this.endEventId = transport.scheduleOnce(() => {
-      Tone.getDraw().schedule(() => this.onEnded?.(), Tone.now())
-    }, composition.durationSeconds)
-    return { sampledPiano, sampleFallback }
+      this.tone?.getDraw().schedule(() => this.onEnded?.(), this.tone!.now())
+    }, this.timeline.durationSeconds)
   }
 
   private createStyleMelody(style: MusicStyle): import('tone').PolySynth {
@@ -147,18 +170,20 @@ export class CompositionAudioPlayer {
     if (!this.tone) return
     const transport = this.tone.getTransport()
     for (const note of notes) {
+      const scheduled = this.timeline.scheduleNote(note)
+      if (!scheduled) continue
       transport.schedule((time) => {
         const velocity = note.velocity / 127
-        if (track === 'melody') this.melody?.triggerAttackRelease(note.pitchName, note.durationSeconds, time, velocity)
-        if (track === 'harmony') this.harmony?.triggerAttackRelease(note.pitchName, note.durationSeconds, time, velocity)
-        if (track === 'bass') this.bass?.triggerAttackRelease(note.pitchName, note.durationSeconds, time, velocity)
-        if (track === 'drums' && note.midi === 36) this.kick?.triggerAttackRelease('C1', note.durationSeconds, time, velocity)
-        if (track === 'drums' && note.midi === 38) this.snare?.triggerAttackRelease(note.durationSeconds, time, velocity)
-        if (track === 'drums' && note.midi === 42) this.hiHat?.triggerAttackRelease(note.durationSeconds, time, velocity)
-        if (track === 'drums' && note.midi === 49) this.crash?.triggerAttackRelease(note.durationSeconds, time, velocity)
-        if (track === 'drums' && note.midi === 45) this.tom?.triggerAttackRelease('G1', note.durationSeconds, time, velocity)
-        if (track === 'drums' && note.midi === 47) this.tom?.triggerAttackRelease('C2', note.durationSeconds, time, velocity)
-      }, note.startSeconds)
+        if (track === 'melody') this.melody?.triggerAttackRelease(note.pitchName, scheduled.durationSeconds, time, velocity)
+        if (track === 'harmony') this.harmony?.triggerAttackRelease(note.pitchName, scheduled.durationSeconds, time, velocity)
+        if (track === 'bass') this.bass?.triggerAttackRelease(note.pitchName, scheduled.durationSeconds, time, velocity)
+        if (track === 'drums' && note.midi === 36) this.kick?.triggerAttackRelease('C1', scheduled.durationSeconds, time, velocity)
+        if (track === 'drums' && note.midi === 38) this.snare?.triggerAttackRelease(scheduled.durationSeconds, time, velocity)
+        if (track === 'drums' && note.midi === 42) this.hiHat?.triggerAttackRelease(scheduled.durationSeconds, time, velocity)
+        if (track === 'drums' && note.midi === 49) this.crash?.triggerAttackRelease(scheduled.durationSeconds, time, velocity)
+        if (track === 'drums' && note.midi === 45) this.tom?.triggerAttackRelease('G1', scheduled.durationSeconds, time, velocity)
+        if (track === 'drums' && note.midi === 47) this.tom?.triggerAttackRelease('C2', scheduled.durationSeconds, time, velocity)
+      }, scheduled.startSeconds)
     }
   }
 
@@ -228,5 +253,7 @@ export class CompositionAudioPlayer {
     }
     this.releaseAndDispose()
     this.compositionId = ''
+    this.composition = null
+    this.timeline = buildPlaybackTimeline(null, true)
   }
 }

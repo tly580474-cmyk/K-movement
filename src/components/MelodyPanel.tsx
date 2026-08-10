@@ -1,5 +1,6 @@
 import { Info, Music2, Sparkles } from 'lucide-react'
 import { melodyNotes, pianoKeys } from '../data'
+import type { PlaybackTimeline } from '../services/playbackTimeline'
 import type { CompositionDto, MusicNoteDto } from '../types/api'
 import { Panel } from './Panel'
 
@@ -56,7 +57,7 @@ function PianoKeyboard({ activeMidi }: { activeMidi: number | null }) {
   )
 }
 
-export function MelodyPanel({ progress, currentSeconds, composition }: { progress: number; currentSeconds: number; composition: CompositionDto | null }) {
+export function MelodyPanel({ progress, currentSeconds, composition, playbackTimeline }: { progress: number; currentSeconds: number; composition: CompositionDto | null; playbackTimeline: PlaybackTimeline }) {
   const generatedNotes = composition?.tracks[0]?.notes ?? []
   const activeGeneratedNote = generatedNotes.reduce<MusicNoteDto | null>(
     (current, note) => note.startSeconds <= currentSeconds ? note : current,
@@ -65,11 +66,16 @@ export function MelodyPanel({ progress, currentSeconds, composition }: { progres
   const fallbackActive = melodyNotes.reduce((current, note) => (
     note.start <= progress && note.start + note.duration >= progress ? note : current
   ), melodyNotes[0])
-  const duration = Math.max(composition?.durationSeconds ?? 0, 0.001)
-  const rollNotes: Array<MusicNoteDto & { tone: 'blue' | 'violet' | 'gold' }> = generatedNotes.map((note, index) => ({
-    ...note,
-    tone: index / Math.max(1, generatedNotes.length - 1) > 0.68 ? 'gold' : index / Math.max(1, generatedNotes.length - 1) > 0.34 ? 'violet' : 'blue',
-  }))
+  const duration = Math.max(playbackTimeline.durationSeconds, 0.001)
+  const rollNotes = generatedNotes.flatMap((note, index): Array<MusicNoteDto & { tone: 'blue' | 'violet' | 'gold' }> => {
+    const scheduled = playbackTimeline.scheduleNote(note)
+    if (!scheduled) return []
+    return [{
+      ...note,
+      ...scheduled,
+      tone: index / Math.max(1, generatedNotes.length - 1) > 0.68 ? 'gold' : index / Math.max(1, generatedNotes.length - 1) > 0.34 ? 'violet' : 'blue',
+    }]
+  })
   const currentMotif = composition?.motifs.find((motif) => motif.id === activeGeneratedNote?.motifId)
   const musicalMode = composition ? `${composition.settings.musicalKey} ${composition.settings.scale}` : '待生成'
 

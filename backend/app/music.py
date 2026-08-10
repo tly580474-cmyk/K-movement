@@ -159,6 +159,8 @@ def _planned_chord(settings: GenerationSettings, degree: int, force_major_domina
 
 
 def _voice_led_chord(chord: tuple[int, ...], previous: tuple[int, ...] | None) -> tuple[int, ...]:
+    if previous is None and len(chord) == 4 and chord[-1] - chord[0] < 12:
+        return tuple(sorted(chord[:2] + (chord[2] + 12, chord[3])))
     if previous is None or len(previous) != len(chord):
         return chord
     candidates: list[tuple[int, tuple[int, ...]]] = []
@@ -174,9 +176,25 @@ def _voice_led_chord(chord: tuple[int, ...], previous: tuple[int, ...] | None) -
                 motion = sum(abs(left - right) for left, right in zip(previous, voicing))
                 common_tones = len(set(previous) & set(voicing))
                 outer_leap = abs(previous[0] - voicing[0]) + abs(previous[-1] - voicing[-1])
+                span = voicing[-1] - voicing[0]
+                gaps = [right - left for left, right in zip(voicing, voicing[1:])]
+                cluster_penalty = sum((3 - gap) * 10 for gap in gaps if gap < 3)
+                narrow_penalty = max(0, 12 - span) * 4
+                parallel_penalty = 0
+                for lower in range(len(voicing) - 1):
+                    for upper in range(lower + 1, len(voicing)):
+                        previous_interval = (previous[upper] - previous[lower]) % 12
+                        current_interval = (voicing[upper] - voicing[lower]) % 12
+                        lower_motion = voicing[lower] - previous[lower]
+                        upper_motion = voicing[upper] - previous[upper]
+                        if previous_interval in {0, 7} and current_interval == previous_interval and lower_motion * upper_motion > 0:
+                            parallel_penalty += 8
                 motion_weight = 0.72 if len(chord) == 4 else 1.0
                 common_weight = 18 if len(chord) == 4 else 10
-                score = round(motion * motion_weight + outer_leap * 0.5 - common_tones * common_weight)
+                score = round(
+                    motion * motion_weight + outer_leap * 0.5 - common_tones * common_weight
+                    + cluster_penalty + narrow_penalty + parallel_penalty
+                )
                 candidates.append((score, voicing))
     return min(candidates, key=lambda item: item[0])[1] if candidates else chord
 
@@ -217,7 +235,8 @@ def _bass_pattern(style: str, root: int, chord: tuple[int, ...], next_root: int)
     low_fifth = min(55, low_root + 7)
     if style == "jazz-lounge":
         third = max(36, min(55, chord[1] - 12))
-        approach = max(36, min(55, next_root - 13 if next_root > root else next_root - 11))
+        next_low_root = max(36, min(55, next_root - 12))
+        approach = next_low_root - 1 if next_low_root > 36 else next_low_root + 1
         return ((0.0, 0.82, low_root), (1.5, 0.52, third), (2.5, 0.52, low_fifth), (3.5, 0.42, approach))
     if style == "ambient-minimal":
         return ((0.0, 3.8, low_root),)
@@ -236,21 +255,21 @@ def _section_progression(trend: str, role: str) -> tuple[int, ...]:
         progressions = {
             "A": (0, 5, 3, 4),
             "A′": (0, 3, 5, 4),
-            "B": (5, 2, 3, 4),
+            "B": (0, 2, 3, 4),
             "A″": (0, 5, 4, 0),
         }
     elif trend == "sideways":
         progressions = {
             "A": (0, 4, 5, 3),
             "A′": (0, 3, 1, 4),
-            "B": (5, 3, 1, 4),
+            "B": (0, 3, 1, 4),
             "A″": (0, 3, 4, 0),
         }
     else:
         progressions = {
             "A": (0, 3, 4, 0),
             "A′": (0, 5, 3, 4),
-            "B": (5, 3, 1, 4),
+            "B": (0, 3, 1, 4),
             "A″": (0, 3, 4, 0),
         }
     return progressions[role]
@@ -267,11 +286,24 @@ def _rhythm_for_bar(style: str, mood: str, activity: float, cadence: str | None)
         return RHYTHM_PATTERNS["active" if activity >= 0.65 else "steady"]
     if style == "jazz-lounge":
         return RHYTHM_PATTERNS["syncopated" if activity >= 0.48 else "calm"]
+    if style == "lofi":
+        return RHYTHM_PATTERNS["syncopated"]
     if mood == "tense" or activity >= 0.72:
         return RHYTHM_PATTERNS["active"]
     if mood == "calm" or activity <= 0.32:
         return RHYTHM_PATTERNS["sparse"]
     return RHYTHM_PATTERNS["steady"]
+
+
+def _section_dynamic(role: str, within_section: int, section_bars: int) -> int:
+    progress = within_section / max(1, section_bars - 1)
+    if role == "A":
+        return round(-4 + 3 * progress)
+    if role == "A′":
+        return round(-1 + 3 * progress)
+    if role == "B":
+        return 2 + within_section * 3 if within_section < 2 else round(8 - 2 * progress)
+    return 6 - within_section * 3 if within_section < 2 else round(2 - 2 * progress)
 
 
 def _bar_count(sample_count: int) -> int:
@@ -376,7 +408,6 @@ def generate_composition(request: CompositionCreateRequest, series: CandleSeries
         min(1.0, abs(ret) / return_limit * 0.45 + min(2.0, volume) / 2 * 0.3 + min(2.0, atr / atr_median) / 2 * 0.25)
         for ret, volume, atr in zip(returns, volume_ratios, atr_ratios)
     ]
-    quiet_cutoff = _quantile(source_activity, 0.2)
     key_positions = _key_source_positions(series, selected_indices, returns)
     trend = _trend_state(series, returns)
     settings = _effective_settings(request.settings, trend)
@@ -428,7 +459,10 @@ def generate_composition(request: CompositionCreateRequest, series: CandleSeries
         _planned_chord(
             b_settings if bar.role == "B" else settings,
             bar.degree,
-            force_major_dominant=(bar.index % section_bars == section_bars - 2 and bar.role in {"B", "A″"}),
+            force_major_dominant=(
+                bar.cadence == "half"
+                or (bar.index % section_bars == section_bars - 2 and bar.role in {"B", "A″"})
+            ),
         )
         for bar in bars
     ]
@@ -443,7 +477,6 @@ def generate_composition(request: CompositionCreateRequest, series: CandleSeries
     previous_velocity = 72
     a_theme_pitches: list[int] = []
     section_event_counts = [0, 0, 0, 0]
-    section_dynamics = {"A": -4, "A′": 0, "B": 5, "A″": 2}
     style_velocity = {"jazz-lounge": -5, "cinematic-epic": 8, "chinese-folk": 1, "ambient-minimal": -9, "pop-rock": 7}
     for bar, chord in zip(bars, raw_chords):
         if bar.quiet:
@@ -495,7 +528,7 @@ def generate_composition(request: CompositionCreateRequest, series: CandleSeries
                 pitch_index = target_index
             else:
                 if bar.role == "B" and bar.index == bar.section * section_bars and slot == 0:
-                    max_step = 6
+                    max_step = min(max_step, 3)
                 pitch_index = max(0, min(len(active_scale_notes) - 1, max(previous_pitch_index - max_step, min(previous_pitch_index + max_step, target_index))))
             resolution_beat = 0.0 if bar.cadence == "authentic" else 2.0
             if bar.cadence and beat == resolution_beat:
@@ -508,8 +541,8 @@ def generate_composition(request: CompositionCreateRequest, series: CandleSeries
                 a_theme_pitches.append(pitch_index)
             volume_adjust = max(-6, min(6, round((volume_ratios[source_position] - 1) * 7)))
             beat_weight = -6 if pickup else 7 if beat == 0 else 4 if beat == 2 else -2
-            phrase_arc = round(6 * (bar.index % section_bars) / max(1, section_bars - 1))
-            phrase_level = 70 + section_dynamics[bar.role] + phrase_arc + style_velocity.get(settings.style, 0)
+            dynamic_level = _section_dynamic(bar.role, bar.index % section_bars, section_bars)
+            phrase_level = 70 + dynamic_level + style_velocity.get(settings.style, 0)
             raw_velocity = phrase_level + beat_weight + volume_adjust + (7 if source_position in key_positions else 0)
             velocity = round(previous_velocity * 0.30 + raw_velocity * 0.70)
             max_velocity_step = 12 if source_position in key_positions else 9
@@ -545,11 +578,16 @@ def generate_composition(request: CompositionCreateRequest, series: CandleSeries
         if bar.quiet:
             continue
         candle_index = selected_indices[bar.source_positions[0]]
-        harmony_base = max(36, min(80, round(48 + bar.activity * 14 + section_dynamics[bar.role])))
+        dynamic_level = _section_dynamic(bar.role, bar.index % section_bars, section_bars)
+        harmony_base = max(36, min(80, round(48 + bar.activity * 14 + dynamic_level)))
         section_start = bar.index % section_bars == 0
         for event_index, (beat, duration, velocity_factor) in enumerate(_harmony_pattern(settings.style, section_start, bar.role, bar.cadence)):
             swung_beat = _swing_beat(beat, settings.style)
-            event_voicing = (voicing[event_index % len(voicing)],) if settings.style == "chinese-folk" else voicing
+            if settings.style == "chinese-folk":
+                pair_index = event_index % len(voicing)
+                event_voicing = (voicing[pair_index], voicing[(pair_index + 1) % len(voicing)])
+            else:
+                event_voicing = voicing
             for voice, midi in enumerate(event_voicing):
                 harmony_notes.append(MusicNote(
                     id=f"harmony-{bar.index + 1}-{event_index + 1}-{voice + 1}", track_id="harmony", midi=midi, pitch_name=_pitch_name(midi),
@@ -579,6 +617,10 @@ def generate_composition(request: CompositionCreateRequest, series: CandleSeries
             if section_start:
                 drum_events.append((0.0, 49, 112, 0.6))
             if settings.style == "cinematic-epic":
+                drum_events.append((0.0, 36, round(78 + bar.activity * 28), 0.38))
+                if section_end:
+                    roll_velocity = round(62 + bar.activity * 34)
+                    drum_events.extend((beat, midi, roll_velocity + index * 5, 0.22) for index, (beat, midi) in enumerate(((2.5, 45), (3.0, 47), (3.5, 45))))
                 for event_index, (beat, midi, velocity, duration) in enumerate(drum_events):
                     drum_notes.append(MusicNote(
                         id=f"drum-{bar.index + 1}-{event_index + 1}", track_id="drums", midi=midi, pitch_name=_pitch_name(midi),
@@ -588,8 +630,14 @@ def generate_composition(request: CompositionCreateRequest, series: CandleSeries
                 continue
             for half_beat in range(8):
                 beat = half_beat / 2
-                if section_end and half_beat >= 5:
-                    drum_events.append((beat, (45, 47, 45)[half_beat - 5], 88 + (half_beat - 5) * 8, 0.24))
+                full_fill = section_end and bar.role in {"B", "A″"}
+                simple_fill = section_end and bar.role in {"A", "A′"}
+                if full_fill and half_beat >= 5:
+                    fill_velocity = round(70 + bar.activity * 28)
+                    drum_events.append((beat, (45, 47, 45)[half_beat - 5], fill_velocity + (half_beat - 5) * 5, 0.24))
+                    continue
+                if simple_fill and half_beat == 7:
+                    drum_events.append((beat, 45, round(64 + bar.activity * 24), 0.22))
                     continue
                 drum_events.append((beat, 42, 62 + (8 if half_beat in {0, 4} else 0), 0.16))
                 if half_beat % 2 == 0:

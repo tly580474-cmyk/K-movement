@@ -302,6 +302,17 @@ input:focus-visible {
 .progress-control input::-moz-range-thumb, .volume-control::-moz-range-thumb { width: 10px; height: 10px; border: 0; border-radius: 50%; background: #b7c7ff; box-shadow: 0 0 8px #6684ff; }
 .progress-control input:disabled { cursor: not-allowed; opacity: .45; }
 .playback-data { display: flex; align-items: center; justify-content: flex-end; gap: 12px; min-width: 0; }
+.breath-control { min-height: 44px; display: flex; align-items: center; gap: 6px; color: #8999b2; font-size: 9px; white-space: nowrap; }
+.breath-control > svg { color: #8298be; }
+.breath-control button { width: 44px; height: 44px; padding: 0; border: 0; border-radius: 8px; background: transparent; position: relative; cursor: pointer; }
+.breath-control button::before { content: ''; position: absolute; left: 3px; right: 3px; top: 11px; height: 20px; border: 1px solid #344667; border-radius: 99px; background: #111b2e; transition: border-color var(--fast), background var(--fast), box-shadow var(--fast); }
+.breath-control button i { position: absolute; left: 6px; top: 14px; z-index: 1; width: 16px; height: 16px; border-radius: 50%; background: #8390a5; transform: translateX(0); transition: transform var(--fast), background var(--fast); }
+.breath-control button:hover:not(:disabled)::before { border-color: #7186bd; }
+.breath-control button:focus-visible { outline: 2px solid #8ca5ff; outline-offset: 2px; }
+.breath-control button.active::before { border-color: #7066ff; background: rgba(81, 67, 210, .3); box-shadow: 0 0 10px rgba(93, 78, 255, .25); }
+.breath-control button.active i { background: #b4c3ff; transform: translateX(16px); box-shadow: 0 0 7px #7185ff; }
+.breath-control button:disabled { cursor: not-allowed; opacity: .4; }
+.breath-control small { min-width: 18px; color: #c2cde0; font-size: 8px; }
 .time-display { color: #acb9ce; font-size: 11px; white-space: nowrap; }
 .playback-data dl { display: flex; gap: 22px; margin: 0; }
 .playback-data dl div { min-width: 40px; }

@@ -1,4 +1,4 @@
-import { Heart, Pause, Play, RotateCcw, SkipBack, SkipForward, Volume2 } from 'lucide-react'
+import { Heart, Pause, Play, RotateCcw, SkipBack, SkipForward, Volume2, Waves } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import type { AssetSummary, CompositionDto, DateRange } from '../types/api'
 
@@ -12,13 +12,16 @@ interface TransportBarProps {
   asset: AssetSummary
   dateRange: DateRange
   composition: CompositionDto | null
+  playbackDuration: number
   playbackError: string
   volume: number
   onVolumeChange: (value: number) => void
+  playBreaths: boolean
+  onPlayBreathsChange: (value: boolean) => void
 }
 
-export function TransportBar({ playing, onToggle, progress, setProgress, bpm, musicalKey, asset, dateRange, composition, playbackError, volume, onVolumeChange }: TransportBarProps) {
-  const totalSeconds = composition?.durationSeconds ?? 0
+export function TransportBar({ playing, onToggle, progress, setProgress, bpm, musicalKey, asset, dateRange, composition, playbackDuration, playbackError, volume, onVolumeChange, playBreaths, onPlayBreathsChange }: TransportBarProps) {
+  const totalSeconds = composition ? playbackDuration : 0
   const currentSeconds = Math.round((progress / 100) * totalSeconds)
   const formatTime = (seconds: number) => `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
   const jump = totalSeconds ? Math.max(1, 240 / bpm) / totalSeconds * 100 : 0
@@ -61,6 +64,23 @@ export function TransportBar({ playing, onToggle, progress, setProgress, bpm, mu
         </label>
       </div>
       <div className="playback-data">
+        <div className="breath-control">
+          <Waves size={15} aria-hidden="true" />
+          <span>播放留白</span>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={playBreaths}
+            aria-label={`播放留白：${playBreaths ? '保留' : '跳过'}`}
+            title={playBreaths ? '当前保留作曲中的呼吸留白' : '当前自动跳过作曲中的呼吸留白'}
+            className={playBreaths ? 'active' : ''}
+            disabled={!composition}
+            onClick={() => onPlayBreathsChange(!playBreaths)}
+          >
+            <i aria-hidden="true" />
+          </button>
+          <small>{playBreaths ? '保留' : '跳过'}</small>
+        </div>
         <span className="time-display">{formatTime(currentSeconds)} / {formatTime(Math.round(totalSeconds))}</span>
         <dl><div><dt>BPM</dt><dd>{bpm}</dd></div><div><dt>调式</dt><dd>{musicalKey}</dd></div><div><dt>拍号</dt><dd>4/4</dd></div></dl>
         <Volume2 size={17} />
